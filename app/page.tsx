@@ -3,7 +3,7 @@
 import { useState } from 'react';
 
 // 模拟公司数据
-const defaultCompanies = ['苹果', '特斯拉', '微软', '谷歌', '亚马逊'];
+const defaultCompanies = ['苹果', '特斯拉', '微软', '谷歌', '亚马逊']; 
 
 export default function Home() {
   const [companies, setCompanies] = useState(defaultCompanies);
