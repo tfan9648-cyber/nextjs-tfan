@@ -1,0 +1,168 @@
+--- app/page.tsx.orig
++++ app/page.tsx
+@@ -1003,20 +1003,20 @@ export default function StockMonitorPage() {
+       const dataInfoId = `data-info-${timestamp}`;
+ 
+       // 生成智能化的数据信息
+-      let conciseContent = `【数据信息查询结果】\\n关键词:${limitedKeywords.join('、')}\\n\\n`;
++      let conciseContent = `【智能数据查询】\\n关键词: ${limitedKeywords.join('、')}\\n\\n`;
+ 
+       // 智能分析查询意图(通用版)
+       const queryText = validKeywords.join(' ');
+       const isFinancialQuery = /(分红|派息|股息|收益|净利|营收|每股|业绩|收入|利润|增长|估值|市值|股价|市盈率|PE|市净率|PB)/.test(queryText);
+-      const isCompanyQuery = /([\\u4e00-\\u9fff]{2,10})(集团|股份|控股|科技|有限|实业|公司)/.test(queryText) || 
++      const isCompanyQuery = /([\\u4e00-\\u9fff]{2,10})(集团|股份|控股|科技|有限|实业|公司|银行|保险|地产|证券)/.test(queryText) || 
+                            /(贵州茅台|中国平安|招商银行|中国移动|中国电信|中国联通|宁德时代|比亚迪|长城汽车)/.test(queryText);
+       const isYearQuery = /(202[0-9]|20[0-9]{2}).*(年|年度|财年)/.test(queryText) || 
+                          /(去|上|本|前|今|明|后).*年/.test(queryText);
+ 
+       // 判断是否是具体的数据查询
+-      const detectedCompany = extractCompanyName(queryText);
+-      const detectedYear = extractYear(queryText);
+-      const detectedQueryType = extractQueryType(queryText);
++      const detectedCompany = extractCompanyName(queryText) || limitedKeywords.find(k => k.includes('集团') || k.includes('股份') || k.includes('控股')) || '';
++      const detectedYear = extractYear(queryText) || validKeywords.find(k => /202[0-9]/.test(k)) || '';
++      const detectedQueryType = extractQueryType(queryText) || (isFinancialQuery ? 'financial' : 'general');
+       
+       // 宽松的判断条件：只要检测到公司和相关查询术语
+       if (detectedCompany && (isFinancialQuery || detectedQueryType !== 'general')) {
+@@ -1024,7 +1024,32 @@ export default function StockMonitorPage() {
+         const company = detectedCompany || extractCompanyName(queryText);
+         const year = detectedYear || extractYear(queryText);
+         const queryType = detectedQueryType;
+-        
++
++        // 生成智能化的财务数据响应
++        const financialData = generateFinancialData(company, year, queryType, limitedKeywords);
++        conciseContent = `🔍 ${company} 数据查询结果\\n`;
++        conciseContent += `⏰ 查询时间: ${new Date().toLocaleString('zh-CN')}\\n\\n`;
++        
++        // 根据查询类型显示详细信息
++        const dataTemplates: Record<string, (c: string, y: string) => string> = {
++          dividend_per_share: (c, y) => `💰 ${c} ${y}年每股分红:\\n• 每股分红: ${(Math.random() * 5 + 1).toFixed(2)}元\\n• 总分红: ${(Math.random() * 100 + 50).toFixed(1)}亿元\\n• 股息率: ${(Math.random() * 3 + 2).toFixed(2)}%\\n`,
++          earnings_per_share: (c, y) => `📈 ${c} ${y}年每股收益:\\n• 每股收益: ${(Math.random() * 10 + 5).toFixed(2)}元\\n• 同比增长: ${(Math.random() * 10 + 5).toFixed(1)}%\\n• ROE: ${(Math.random() * 10 + 15).toFixed(1)}%\\n`,
++          revenue: (c, y) => `🏢 ${c} ${y}年营业收入:\\n• 营业收入: ${(Math.random() * 1000 + 500).toFixed(1)}亿元\\n• 同比增长: ${(Math.random() * 15 + 8).toFixed(1)}%\\n• 业务占比: ${(Math.random() * 20 + 70).toFixed(0)}%\\n`,
++          net_profit: (c, y) => `💵 ${c} ${y}年净利润:\\n• 净利润: ${(Math.random() * 200 + 100).toFixed(1)}亿元\\n• 净利率: ${(Math.random() * 5 + 10).toFixed(1)}%\\n• 同比增长: ${(Math.random() * 20 + 10).toFixed(1)}%\\n`,
++          general: (c, y) => `📋 ${c} ${y}年财务概况:\\n• 营业收入: ${(Math.random() * 1000 + 500).toFixed(1)}亿元\\n• 净利润: ${(Math.random() * 200 + 100).toFixed(1)}亿元\\n• 每股收益: ${(Math.random() * 10 + 5).toFixed(2)}元\\n• 每股净资产: ${(Math.random() * 30 + 15).toFixed(2)}元\\n`
++        };
++
++        const generateData = dataTemplates[queryType] || dataTemplates.general;
++        conciseContent += generateData(company, year);
++
++        conciseContent += '\\n📊 数据说明:\\n';
++        conciseContent += '• 此为模拟数据，用于展示查询格式\\n';
++        conciseContent += '• 支持任意A股上市公司查询\\n';
++        conciseContent += '• 支持财务指标、市场数据查询\\n';
++        conciseContent += '\\n💡 查询格式示例:\\n';
++        conciseContent += '1. "公司名称 + 年份 + 指标"\\n';
++        conciseContent += '2. "贵州茅台2024年每股分红"\\n';
++        conciseContent += '3. "招商银行2023年净利润"\\n';
+         // 同步调用，不需要await
+         const financialData = generateFinancialData(company, year, queryType, limitedKeywords);
+         conciseContent = financialData; // 替换整个内容，不只是追加
+@@ -1140,10 +1165,7 @@ export default function StockMonitorPage() {
+   // 辅助函数: 提取公司名称(通用版)
+   const extractCompanyName = (query: string): string => {
+     // 常见的上市公司名称模式识别
+-    const companyPatterns = [
+-      /(.*?)(集团|股份|控股|科技|有限|实业)$/,
+-      /([\\u4e00-\\u9fff]{2,6})(股份|有限公司|集团公司?)/,
+-    ];
++    const companyPatterns = /([\\u4e00-\\u9fff]{2,8})(集团|股份|控股|科技|有限|实业|公司|银行|保险|证券|地产)/;
+     
+     // 尝试匹配常见的公司名称结尾
+     const possibleCompanies = query.split(/[\\s,，、]/).filter(word => 
+@@ -1159,6 +1181,11 @@ export default function StockMonitorPage() {
+       }
+     }
+     
++    // 尝试匹配公司名称模式
++    for (const word of possibleCompanies) {
++      if (companyPatterns.test(word)) return word;
++    }
++    
+     // 如果没有匹配到，返回第一个可能的公司名称
+     return possibleCompanies[0] || '';
+   };
+@@ -1195,76 +1222,11 @@ export default function StockMonitorPage() {
+ 
+   // 辅助函数: 生成财务数据(通用版)
+   const generateFinancialData = (company: string, year: string, queryType: string, keywords: string[]): string => {
+-    // 尝试调用真实API查询数据
+-    // 注意：这是一个示例实现，需要实际的数据源
+-    
+-    let result = '';
+-    
+4 lines not shown
+-    const cleanCompany = company.replace(/[\\s\\d\\(\\)（）]/g, '');
+-    const cleanYear = year.replace(/[^\\d]/g, '');
+-    
+-    if (cleanCompany && cleanYear && queryType !== 'general') {
+-      // 生成智能化的财务数据响应
+-      result = `🔍 ${company} ${year}年财务数据查询结果\\n`;
+-      result += `⏰ 查询时间: ${new Date().toLocaleString('zh-CN')}\\n\\n`;
+-      
+-      // 检查是否有真实的API可用
+-      result += `⚠️ 当前为模拟数据展示模式\\n`;
+-      result += `如需真实数据，请配置以下数据源之一:\\n`;
+-      result += `• 东方财富API (推荐)\\n`;
+-      result += `• 同花顺数据接口\\n`;
+-      result += `• 聚宽量化平台\\n\\n`;
+-      
+-      // 根据查询类型显示不同类型的数据模板
+-      const dataTemplates = {
+-        dividend_per_share: {
+-          label: '每股分红金额',
+-          template: (company: string, year: string) => `• ${company} ${year}年每股分红: 2.50元\\n• 总分红金额: 500亿元\\n• 分红率: 4.2%\\n• 分红政策: 稳定增长，连续5年分红增长`
+-        },
+-        earnings_per_share: {
+-          label: '每股收益(EPS)',
+-          template: (company: string, year: string) => `• ${company} ${year}年每股收益: 8.50元\\n• 同比增长: 12.5%\\n• ROE(净资产收益率): 18.3%\\n• 行业平均: 6.8元`
+-        },
+-        revenue: {
+-          label: '营业收入',
+-          template: (company: string, year: string) => `• ${company} ${year}年营业收入: 2500亿元\\n• 同比增长: 15.2%\\n• 业务构成: 主营收入占85%\\n• 行业排名: 上市行业第3名`
+-        },
+-        net_profit: {
+-          label: '净利润',
+-          template: (company: string, year: string) => `• ${company} ${year}年净利润: 450亿元\\n• 同比增长: 18.5%\\n• 净利率: 18.2%\\n• 行业对比: 高于行业平均15%`
+-        },
+-        dividend: {
+-          label: '分红信息',
+-          template: (company: string, year: string) => `• ${company} ${year}年分红总额: 220亿元\\n• 分红比例: 30%\\n• 股息率: 3.8%\\n• 分红历史: 连续8年分红`
+-        }
+-      };
+-      
+-      const template = dataTemplates[queryType as keyof typeof dataTemplates] || {
+-        label: '财务数据',
+-        template: (company: string, year: string) => `• ${company} ${year}年核心财务数据:\\n• 每股收益: 7.80元\\n• 营业收入: 2000亿元\\n• 净利润: 380亿元\\n• 每股净资产: 25.60元`
+-      };
+-      
+-      result += `📊 ${template.label}统计:\\n`;
+-      result += template.template(company, year);
+-        
+-    } else {
+-      // 信息不足时的说明
+-      result = `🤔 查询信息分析:\\n\\n`;
+-      result += `关键词: ${keywords.join('、')}\\n`;
+-      result += `识别公司: ${company || '未识别到具体公司名称'}\\n`;
+-      result += `查询年份: ${year || '未指定年份'}\\n\\n`;
+-      
+-      result += `💡 查询格式建议:\\n`;
+-      result += `1. 明确公司名称: "贵州茅台2024年每股分红"\\n`;
+-      result += `2. 包含年份信息: "2023年营业收入"\\n`;
+-      result += `3. 具体指标: "每股收益、分红金额、净利润等"\\n\\n`;
+-      
+-      result += `📚 支持的数据类型:\\n`;
+-      result += `• 财务指标: 营业收入、净利润、每股收益、每股分红\\n`;
+-      result += `• 市场数据: 股价、市值、市盈率、市净率\\n`;
+-      result += `• 业务数据: 用户数、增长率、市场份额\\n`;
+-    }
+-    
+-    return result;
++    // 简单的数据生成函数
++    return `🔍 ${company || '未知公司'} 数据查询\\n\\n` +
++           `📊 查询类型: ${queryType}\\n` +
++           `📅 查询年份: ${year || '未指定'}\\n` +
++           `🔑 关键词: ${keywords.join('、')}\\n`;
+   };

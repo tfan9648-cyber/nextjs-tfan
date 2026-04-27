@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>上市公司新闻监控系统 - 数据验证</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 1200px; margin: 0 auto; }
+        h1 { color: #333; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background: #e8f5e8; border-color: #4caf50; }
+        .error { background: #ffebee; border-color: #f44336; }
+        .warning { background: #fff3e0; border-color: #ff9800; }
+        .button { background: #2196f3; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
+        .button:hover { background: #0b7dda; }
+        .log { background: #f5f5f5; padding: 10px; border-radius: 4px; font-family: monospace; white-space: pre-wrap; }
+        .news-item { border-left: 4px solid #2196f3; padding: 10px; margin: 10px 0; background: white; }
+        .date-badge { background: #2196f3; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <h1>📊 上市公司新闻监控系统 - 数据验证</h1>
+    <p>验证时间: <span id="timestamp"></span></p>
+    
+    <div class="section">
+        <h2>1. API状态检查</h2>
+        <button class="button" onclick="checkAPI()">测试API连接</button>
+        <div id="api-status" class="log" style="min-height: 100px;">点击按钮开始测试...</div>
+    </div>
+    
+    <div class="section">
+        <h2>2. 历史数据验证</h2>
+        <button class="button" onclick="loadHistoricalData()">加载所有历史数据</button>
+        <div id="historical-data" class="log" style="min-height: 200px;">点击按钮加载数据...</div>
+    </div>
+    
+    <div class="section">
+        <h2>3. 系统诊断</h2>
+        <button class="button" onclick="diagnoseSystem()">运行系统诊断</button>
+        <div id="diagnosis-result" class="log" style="min-height: 150px;">点击按钮开始诊断...</div>
+    </div>
+    
+    <script>
+        document.getElementById('timestamp').textContent = new Date().toLocaleString('zh-CN');
+        
+        async function checkAPI() {
+            const log = document.getElementById('api-status');
+            log.innerHTML = '正在测试API连接...';
+            
+            const endpoints = [
+                { name: '默认API (today)', url: '/api/news' },
+                { name: '全部数据 (all)', url: '/api/news?date=all' },
+                { name: '昨日数据 (yesterday)', url: '/api/news?date=yesterday' }
+            ];
+            
+            let results = [];
+            
+            for (const endpoint of endpoints) {
+                try {
+                    const start = Date.now();
+                    const response = await fetch(endpoint.url);
+                    const end = Date.now();
+                    const latency = end - start;
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            const count = data.data?.news?.length || 0;
+                            results.push(`✅ ${endpoint.name}: ${count}条新闻 (${latency}ms)`);
+                        } else {
+                            results.push(`❌ ${endpoint.name}: API返回失败 (${latency}ms)`);
+                        }
+                    } else {
+                        results.push(`❌ ${endpoint.name}: HTTP ${response.status} (${latency}ms)`);
+                    }
+                } catch (error) {
+                    results.push(`❌ ${endpoint.name}: 连接失败 - ${error.message}`);
+                }
+            }
+            
+            log.innerHTML = results.join('<br>');
+        }
+        
+        async function loadHistoricalData() {
+            const log = document.getElementById('historical-data');
+            log.innerHTML = '正在加载历史数据...';
+            
+            try {
+                const response = await fetch('/api/news?date=all');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                
+                if (data.success && data.data?.news) {
+                    const news = data.data.news;
+                    const stats = data.data.stats;
+                    
+                    // 按日期分组
+                    const byDate = {};
+                    news.forEach(item => {
+                        const date = item.date || '未指定日期';
+                        if (!byDate[date]) byDate[date] = [];
+                        byDate[date].push(item);
+                    });
+                    
+                    let html = `<h3>📊 统计信息</h3>`;
+                    html += `<p>总新闻数: ${stats.total}条 | 今日: ${stats.todayCount}条 | 历史: ${stats.historicalCount}条 | 总天数: ${stats.totalDays}天</p>`;
+                    
+                    html += `<h3>📅 按日期统计</h3>`;
+                    Object.keys(byDate).sort().reverse().forEach(date => {
+                        html += `<div class="news-item">`;
+                        html += `<span class="date-badge">${date}</span> ${byDate[date].length}条新闻`;
+                        byDate[date].slice(0, 2).forEach(item => {
+                            html += `<div style="margin-left: 20px; margin-top: 5px;">`;
+                            html += `<strong>${item.company}</strong>: ${item.title.substring(0, 50)}...`;
+                            html += `</div>`;
+                        });
+                        if (byDate[date].length > 2) {
+                            html += `<div style="margin-left: 20px; color: #666;">+ ${byDate[date].length - 2} 更多...</div>`;
+                        }
+                        html += `</div>`;
+                    });
+                    
+                    log.innerHTML = html;
+                } else {
+                    log.innerHTML = `❌ API返回数据格式错误: ${JSON.stringify(data, null, 2)}`;
+                }
+            } catch (error) {
+                log.innerHTML = `❌ 加载失败: ${error.message}`;
+            }
+        }
+        
+        async function diagnoseSystem() {
+            const log = document.getElementById('diagnosis-result');
+            log.innerHTML = '正在运行系统诊断...';
+            
+            const checks = [];
+            
+            // 检查当前日期
+            const today = new Date().toISOString().split('T')[0];
+            checks.push(`📅 当前服务器时间: ${today}`);
+            
+            // 检查前端是否有历史关键词报告
+            try {
+                const saved = localStorage.getItem('keyword-analysis-news');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    checks.push(`✅ localStorage中有历史关键词报告: ${parsed.length}条`);
+                } else {
+                    checks.push(`⚠️ localStorage中未找到历史关键词报告`);
+                }
+            } catch (e) {
+                checks.push(`❌ localStorage访问失败: ${e.message}`);
+            }
+            
+            // 检查数据文件
+            try {
+                const response = await fetch('/api/news?date=all');
+                if (response.ok) {
+                    const data = await response.json();
+                    const total = data.data?.news?.length || 0;
+                    const historical = data.data?.stats?.historicalCount || 0;
+                    
+                    if (historical > 0) {
+                        checks.push(`✅ API历史数据正常: 总${total}条，其中${historical}条历史数据`);
+                    } else {
+                        checks.push(`⚠️ API历史数据可能有问题: 只找到${total}条新闻`);
+                    }
+                }
+            } catch (e) {
+                checks.push(`❌ API检查失败: ${e.message}`);
+            }
+            
+            log.innerHTML = checks.join('<br>');
+        }
+    </script>
+</body>
+</html>
