@@ -41,6 +41,12 @@ yarn-error.log*
 /data/news_*.json
 /data/source_validation_*.json
 
+# python venv
+scripts/venv/
+scripts/__pycache__/
+scripts/*.log
+scripts/cron.log
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
