@@ -1,6 +1,6 @@
 {
-  "lastUpdate": "2026-04-27T09:04:38.082Z",
-  "totalNews": 3,
+  "lastUpdate": "2026-04-28T08:00:12.759833",
+  "totalNews": 1,
   "systemStatus": "running",
   "nextAutoUpdate": "2026-04-22T08:00:00",
   "version": "2.0",
@@ -19,11 +19,5 @@
     "凌霄泵业",
     "长江电力"
   ],
-  "defaultKeywords": [
-    "人工智能发展趋势",
-    "云计算市场分析",
-    "电商行业竞争",
-    "新能源汽车政策",
-    "数字货币监管"
-  ]
+  "defaultKeywords": []
 }

@@ -9,10 +9,17 @@ import json
 import re
 import time
 import os
+import hashlib
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import logging
 from bs4 import BeautifulSoup
+
+try:
+    import psycopg2
+    HAS_PSYCOPG2 = True
+except ImportError:
+    HAS_PSYCOPG2 = False
 
 # 配置日志
 logging.basicConfig(
@@ -308,6 +315,50 @@ class StockNewsCrawler:
         logger.info(f"抓取完成，共获取{len(all_news)}条新闻")
         return all_news
     
+    def save_to_db(self, news_list: List[Dict]):
+        """保存新闻到 Neon Postgres 数据库"""
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('POSTGRES_URL', '')
+        if not db_url or not HAS_PSYCOPG2:
+            logger.warning("数据库不可用，跳过数据库写入")
+            return False
+        
+        try:
+            conn = psycopg2.connect(db_url)
+            cur = conn.cursor()
+            
+            inserted = 0
+            for news in news_list:
+                news_id = news.get('id') or f"crawler-{hashlib.md5((news.get('title','') + news.get('date','')).encode()).hexdigest()[:12]}"
+                cur.execute("""
+                    INSERT INTO news (id, date, company, title, summary, content, sources, category, read_time, is_keyword_search, timestamp, keywords)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, summary = EXCLUDED.summary
+                """, (
+                    news_id,
+                    news.get('date', ''),
+                    news.get('company', ''),
+                    news.get('title', ''),
+                    news.get('summary', ''),
+                    news.get('content', '')[:5000],
+                    json.dumps(news.get('sources', []), ensure_ascii=False),
+                    news.get('category', 'company_news'),
+                    news.get('readTime', ''),
+                    news.get('isKeywordSearch', False),
+                    int(time.time() * 1000),
+                    json.dumps(news.get('keywords', []), ensure_ascii=False),
+                ))
+                inserted += 1
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            logger.info(f"✅ 已写入数据库: {inserted} 条新闻")
+            return True
+            
+        except Exception as e:
+            logger.error(f"写入数据库失败: {e}")
+            return False
+
     def save_to_json(self, news_list: List[Dict], filepath: str = None):
         """保存新闻到JSON文件"""
         if filepath is None:
@@ -417,6 +468,9 @@ class StockNewsCrawler:
             
             # 保存数据
             self.save_to_json(news_list)
+            
+            # 写入数据库
+            self.save_to_db(news_list)
             
             # 更新前端配置
             self.update_frontend_data()

@@ -37,19 +37,22 @@ interface NewsItem {
 }
 
 const DEFAULT_COMPANIES = [
+  "中国平安",
+  "美的集团",
+  "伊利股份",
+  "招商银行",
   "贵州茅台",
-  "宁德时代",
-  "比亚迪",
+  "泸州老窖",
   "腾讯控股",
   "阿里巴巴",
-  "中国平安",
-  "招商银行",
-  "美的集团",
-  "隆基绿能",
-  "药明康德",
+  "万华化学",
+  "福耀玻璃",
+  "昱能科技",
+  "凌霄泵业",
+  "长江电力",
 ];
 
-const DEFAULT_KEYWORDS = ["人工智能", "云计算", "新能源", "电商平台", "医疗健康"];
+const DEFAULT_KEYWORDS = ["", "", "", "", ""];
 const PAGE_SIZE = 10;
 
 export default function Home() {

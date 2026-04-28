@@ -36,6 +36,9 @@ pip install --upgrade pip > /dev/null 2>&1
 pip install -r requirements.txt > /dev/null 2>&1
 echo "✅ Python依赖已安装"
 
+# 加载数据库环境变量
+export DATABASE_URL="postgresql://neondb_owner:npg_0HWy5KbOrlVT@ep-curly-dream-amneuepk.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require"
+
 # 运行爬虫
 echo "启动数据抓取..."
 if python3 stock_crawler.py 2>&1 | tee -a "$LOG_FILE"; then
