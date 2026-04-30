@@ -106,10 +106,19 @@ export async function searchFinanceNews(
   maxResults = 10
 ): Promise<TavilySearchResult[]> {
   const query = keywords.join(' ') + ' 财经新闻 最新';
+  const CN_FINANCE_DOMAINS = [
+    'eastmoney.com', 'sina.com.cn', '10jqka.com.cn', 
+    'cls.cn', 'cninfo.com.cn', 'stcn.com', 
+    'cs.com.cn', 'caixin.com', 'wallstreetcn.com',
+    'stockstar.com', 'hexun.com'
+  ];
   return searchTavily(query, {
     maxResults,
-    topic: 'news',
-    timeRange: 'week',
+    searchDepth: 'advanced',
+    topic: 'general',
+    timeRange: 'month',
+    includeDomains: CN_FINANCE_DOMAINS,
+    includeRawContent: true,
   });
 }
 
@@ -130,13 +139,54 @@ export async function searchInvestment(
 }
 
 /**
+ * 搜索财务数据（专门为“查找数据信息”场景优化）
+ */
+export async function searchFinanceData(
+  keywords: string[],
+  maxResults = 10
+): Promise<TavilySearchResult[]> {
+  // 财务数据相关的关键词增强
+  const financeTerms = ['财报', '季报', '年报', '净利润', '营业收入', '每股收益', '净资产收益率', '扣非净利润', '每股净资产'];
+  const hasFinanceTerm = keywords.some(k => financeTerms.some(t => k.includes(t)));
+  
+  let query = keywords.join(' ');
+  if (hasFinanceTerm) {
+    query += ' 财务数据 具体数据 业绩';
+  } else {
+    query += ' 最新数据 财经';
+  }
+  
+  const CN_FINANCE_DOMAINS = [
+    'eastmoney.com', 'sina.com.cn', '10jqka.com.cn', 
+    'cls.cn', 'cninfo.com.cn', 'stcn.com', 
+    'cs.com.cn', 'caixin.com', 'wallstreetcn.com',
+    'stockstar.com', 'hexun.com'
+  ];
+  
+  return searchTavily(query, {
+    maxResults,
+    searchDepth: 'advanced',
+    topic: 'general',
+    timeRange: 'month',
+    includeDomains: CN_FINANCE_DOMAINS,
+    includeRawContent: true,
+  });
+}
+
+/**
  * 将搜索结果格式化为上下文文本（给 DeepSeek 用）
  */
 export function formatSearchContext(results: TavilySearchResult[]): string {
   if (results.length === 0) return '';
   let context = '以下是搜索到的相关信息：\n\n';
   results.forEach((r, i) => {
-    context += `${i + 1}. ${r.title}\n   ${r.snippet}\n   来源: ${r.url}\n\n`;
+    context += `${i + 1}. ${r.title}\n   ${r.snippet}\n`;
+    // 如果有原始内容，截取前2000字符
+    if (r.rawContent) {
+      const truncated = r.rawContent.slice(0, 2000);
+      context += `   详细内容: ${truncated}\n`;
+    }
+    context += `   来源: ${r.url}\n\n`;
   });
   return context;
 }

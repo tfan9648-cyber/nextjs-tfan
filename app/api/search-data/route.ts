@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb, initDb } from '@/lib/db';
-import { searchFinanceNews, formatSearchContext } from '@/lib/tavily';
+import { searchFinanceData, formatSearchContext } from '@/lib/tavily';
 
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://api.siliconflow.cn/v1';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
@@ -16,11 +16,11 @@ async function callDeepSeek(prompt: string): Promise<string> {
     body: JSON.stringify({
       model: DEEPSEEK_MODEL,
       messages: [
-        { role: 'system', content: '你是一位专业的财经数据分析师。请根据搜索到的信息，提取关键数据，用简洁扼要的方式呈现。只显示关键数据信息，不要废话。保留信息来源的原始链接。' },
+        { role: 'system', content: '你是一位专业的财经数据分析师。请根据搜索到的信息，提取关键财务数据。\n重点提取以下指标（如果搜索结果中有的话）：\n- 营业收入及同比增长率\n- 净利润及同比增长率\n- 扣非净利润及同比增长率\n- 每股收益（EPS）\n- 每股净资产\n- 净资产收益率（ROE）\n- 毛利率\n- 净利率\n- 经营性现金流\n\n要求：\n1. 数据必须是具体的数字，不能只说"增长"而不给数据\n2. 用表格或清晰的列表格式呈现\n3. 标注数据的报告期和来源\n4. 如果某些指标未找到，标注"未查到"' },
         { role: 'user', content: prompt },
       ],
       temperature: 0.3,
-      max_tokens: 2000,
+      max_tokens: 4000,
     }),
     signal: AbortSignal.timeout(120000),
   });
@@ -45,8 +45,8 @@ export async function POST(request: NextRequest) {
     const today = new Date().toISOString().split('T')[0];
     const timestamp = Date.now();
 
-    // 使用 Tavily 搜索
-    const searchResults = await searchFinanceNews(validKeywords);
+    // 使用 Tavily 搜索财务数据
+    const searchResults = await searchFinanceData(validKeywords);
 
     let content = '';
     const sources: string[] = searchResults.map(r => r.url);
@@ -58,11 +58,12 @@ export async function POST(request: NextRequest) {
 
 ${searchContext}
 
-请根据以上搜索结果，提取与"${validKeywords.join('、')}"相关的关键数据信息。要求：
-1. 只显示关键数据，扼要简洁
-2. 用清晰的格式呈现（如列表、表格式）
-3. 每条数据标注信息来源
-4. 如果搜索结果中没有直接相关的数据，请说明并给出可能的查询方向`;
+请根据以上搜索结果，提取与"${validKeywords.join('、')}"相关的关键财务数据。要求：
+1. 必须提取具体数字（营业收入、净利润、每股收益、净资产收益率等）
+2. 用清晰的格式呈现，建议用表格形式
+3. 标注报告期（如2026年一季度）和信息来源
+4. 对比上年同期的变化（如果有数据）
+5. 如果搜索结果中没有具体数字，明确说明"未在搜索结果中找到具体数据"并建议查阅巨潮资讯网(cninfo.com.cn)或东方财富网的原始公告`;
 
       try {
         content = await callDeepSeek(prompt);
@@ -80,11 +81,11 @@ ${searchContext}
       try {
         const prompt = `用户想查询以下信息：${validKeywords.join('、')}
 
-搜索引擎未返回结果。请根据你的知识，尽可能提供相关的关键数据信息。如果数据可能不准确，请注明。要求简洁扼要，只显示关键数据。`;
+搜索引擎未返回结果。请根据你的知识，尽可能提供相关的财务数据信息。重点查找以下指标：\n- 营业收入及增长率\n- 净利润及增长率\n- 每股收益（EPS）\n- 净资产收益率（ROE）\n\n如果数据可能不准确，请注明"数据可能不准，请以官方公告为准"。`;
         content = await callDeepSeek(prompt);
-        content += '\n\n⚠️ 注：以上信息来自AI知识库，可能不是最新数据，请以官方公告为准。';
+        content += '\n\n⚠️ 注：以上信息来自AI知识库，可能不是最新数据，请以官方公告为准。建议查阅巨潮资讯网(cninfo.com.cn)或东方财富网的原始公告。';
       } catch {
-        content = `未搜索到相关数据。建议：\n1. 尝试更具体的关键词\n2. 检查公司名称是否正确\n3. 访问东方财富网(eastmoney.com)或巨潮资讯网(cninfo.com.cn)直接查询`;
+        content = `未搜索到相关数据。建议：\n1. 访问巨潮资讯网(cninfo.com.cn)直接查询原版公告\n2. 访问东方财富网(eastmoney.com)查看最新财报\n3. 确认公司名称是否正确（使用全称或股票代码）\n4. 财报数据通常在报告期结束后1-3个月内发布`;
       }
     }
 
