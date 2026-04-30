@@ -8,6 +8,9 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
 // === 配置 ===
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
@@ -16,17 +19,31 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-ai/DeepSeek-V3.2';
 const DATABASE_URL = process.env.DATABASE_URL || '';
 
+// === 公司-股票代码映射 ===
+const COMPANY_STOCK_MAP = {
+  "中国平安": "000001",
+  "美的集团": "000333",
+  "伊利股份": "600887",
+  "招商银行": "600036",
+  "贵州茅台": "600519",
+  "泸州老窖": "000568",
+  "腾讯控股": null,
+  "阿里巴巴": null,
+  "万华化学": "600309",
+  "福耀玻璃": "600660",
+  "昱能科技": "688348",
+  "凌霄泵业": "002884",
+  "长江电力": "600900"
+};
+
 // 从 config.json 动态读取公司列表，支持用户随时更新
 import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 function loadCompanies() {
   try {
-    const configPath = join(__dirname, '..', 'data', 'config.json');
+    // 获取当前脚本目录
+    const currentDir = dirname(fileURLToPath(import.meta.url));
+    const configPath = join(currentDir, '..', 'data', 'config.json');
     const config = JSON.parse(readFileSync(configPath, 'utf-8'));
     if (config.supportedCompanies && config.supportedCompanies.length > 0) {
       console.log(`📋 从 config.json 加载 ${config.supportedCompanies.length} 家公司`);
@@ -51,9 +68,13 @@ async function searchTavily(query, options = {}) {
     query,
     max_results: options.maxResults || 5,
     search_depth: options.searchDepth || 'basic',
-    topic: options.topic || 'news',
+    topic: options.topic || 'general',
     ...(options.timeRange && { time_range: options.timeRange }),
+    ...(options.includeDomains && { include_domains: options.includeDomains }),
   };
+  // 添加 includeRawContent 和 searchDepth 参数
+  if (options.includeRawContent) body.include_raw_content = true;
+  if (options.searchDepth) body.search_depth = options.searchDepth;
   try {
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -67,9 +88,44 @@ async function searchTavily(query, options = {}) {
       title: r.title || '',
       url: r.url || '',
       snippet: r.content || '',
+      rawContent: r.raw_content || '',
     }));
   } catch (e) {
     console.error(`Tavily failed for "${query}":`, e.message);
+    return [];
+  }
+}
+
+// === AKShare 搜索 ===
+function searchAkShare(stockCode) {
+  try {
+    // 获取当前脚本目录
+    const currentDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(currentDir, 'fetch_akshare_news.py');
+    const command = `${scriptPath} ${stockCode}`;
+    const result = execSync(command, {
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024, // 1MB
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+    
+    if (!result.trim()) {
+      console.log(`  ℹ️  AKShare 返回空结果 (股票: ${stockCode})`);
+      return [];
+    }
+    
+    const news = JSON.parse(result.trim());
+    console.log(`  ℹ️  AKShare 返回 ${news.length} 条新闻 (股票: ${stockCode})`);
+    return news.map(item => ({
+      title: item.title || '',
+      url: item.url || '',
+      snippet: item.content || '',
+      source: item.source || '东方财富',
+      publishTime: item.publishTime || ''
+    }));
+  } catch (error) {
+    console.error(`  ❌ AKShare 搜索失败 (股票: ${stockCode}):`, error.message);
     return [];
   }
 }
@@ -85,11 +141,11 @@ async function callDeepSeek(prompt) {
     body: JSON.stringify({
       model: DEEPSEEK_MODEL,
       messages: [
-        { role: 'system', content: '你是一位专业的财经新闻编辑。请根据搜索结果，为指定上市公司撰写当日要闻摘要。要求：简洁准确，突出重点，标注信息来源。如果没有重要新闻，直接说明即可。' },
+        { role: 'system', content: '你是一位专业的财经新闻编辑和数据分析师。请根据搜索结果，为指定上市公司撰写过去24小时内的要闻摘要。\n\n核心要求:\n1. 严格只总结最近24小时的新闻，忽略更早的旧闻\n2. 如果新闻涉及财报/业绩数据，必须提取并列出所有具体财务数字：\n   - 营业收入及同比增长率\n   - 净利润及同比增长率\n   - 扣非净利润及同比增长率\n   - 每股收益（EPS）\n   - 每股净资产\n   - 净资产收益率（ROE）\n   - 毛利率、净利率\n   - 经营性现金流\n3. 数据必须是具体的数字，不能只说“增长”而不给数据\n4. 标注信息来源\n5. 如果没有最近24小时的新闻，直接说明暂无重要新闻' },
         { role: 'user', content: prompt },
       ],
       temperature: 0.3,
-      max_tokens: 1500,
+      max_tokens: 3000,
     }),
     signal: AbortSignal.timeout(60000),
   });
@@ -125,28 +181,75 @@ async function initDb(sql) {
 async function fetchCompanyNews(company, today, sql) {
   console.log(`🔍 搜索: ${company}...`);
 
-  const results = await searchTavily(`${company} 最新新闻 公告`, {
-    maxResults: 5,
-    topic: 'news',
-    timeRange: 'day',
-  });
+  // 获取股票代码
+  const stockCode = COMPANY_STOCK_MAP[company];
+  let results = [];
+
+  if (stockCode) {
+    // 使用 AKShare 抓取
+    results = searchAkShare(stockCode);
+    // AKShare 已经过滤了今日新闻，如果为空则说明今天没有新闻
+    if (results.length === 0) {
+      console.log(`  ⏭️  ${company}(${stockCode}): 今日暂无新闻`);
+      return null;
+    }
+  } else {
+    // 腾讯、阿里等无法用AKShare的，回退到Tavily
+    if (!TAVILY_API_KEY) {
+      console.error(`  ❌ ${company}: 需要TAVILY_API_KEY但未配置`);
+      return null;
+    }
+    console.log(`  ⚠️  ${company}: 无法使用AKShare，回退到Tavily`);
+    
+    // 搜索国内财经网站，topic 用 general（Tavily 的 news 偏英文源）
+    const CN_FINANCE_DOMAINS = [
+      'eastmoney.com',    // 东方财富
+      'sina.com.cn',      // 新浪财经
+      '10jqka.com.cn',    // 同花顺
+      'cls.cn',           // 财联社
+      'wallstreetcn.com', // 华尔街见闻
+      '36kr.com',         // 36氪
+      'cninfo.com.cn',    // 巨潮资讯（公告）
+      'stcn.com',         // 证券时报
+      'cs.com.cn',        // 中证网
+      'caixin.com',       // 财新
+    ];
+    // 增强 Tavily 搜索参数，包含财务数据
+    results = await searchTavily(`${company} 今日最新新闻 公告 财报数据`, {
+      maxResults: 8,
+      searchDepth: 'advanced',
+      topic: 'general',
+      timeRange: 'day',
+      includeDomains: CN_FINANCE_DOMAINS,
+      includeRawContent: true,
+    });
+  }
 
   if (results.length === 0) {
     console.log(`  ⏭️  ${company}: 无新闻`);
     return null;
   }
 
-  // 构建上下文
+  // 构建上下文（包含发布时间以便 AI 判断新旧）
   let context = `公司: ${company}\n搜索结果:\n\n`;
   results.forEach((r, i) => {
-    context += `${i + 1}. ${r.title}\n   ${r.snippet}\n   来源: ${r.url}\n\n`;
+    const timeInfo = r.publishTime ? `   发布时间: ${r.publishTime}\n` : '';
+    context += `${i + 1}. ${r.title}\n${timeInfo}   ${r.snippet}\n`;
+    // 如果有原始内容（Tavily advanced 搜索），截取前1500字符
+    if (r.rawContent) {
+      const truncated = r.rawContent.slice(0, 1500);
+      context += `   详细内容: ${truncated}\n`;
+    }
+    context += `   来源: ${r.url}\n\n`;
   });
 
-  const prompt = `${context}\n请为"${company}"撰写今日要闻摘要。要求：
-1. 标题格式：${company}+核心事件（不超过25字）
-2. 正文200-500字，突出关键信息
-3. 标注信息来源链接
-4. 如果搜索结果与该公司无直接关系，请说明"暂无重要新闻"
+  const prompt = `${context}\n今天日期: ${today}\n请为"${company}"撰写今日要闻摘要。要求：
+1. 严格只总结今天（${today}）的新闻。注意：有些新闻虽然发布时间是今天，但内容实际是过去年份的旧数据（例如内容提到"2024年"、"2025年一季度"等旧报告期），这些应视为旧闻并忽略。只保留真正与当前时间相关的新闻（如今天的公告、最新季度财报等）
+2. 标题格式：${company}+核心事件（不超过25字）
+3. 正文200-800字，突出关键信息，尤其是具体的财务数据
+4. 如果涉及财报/业绩公告，必须列出所有找到的财务指标数据（营收、净利润、EPS、ROE等），用列表或表格格式
+5. 标注信息来源链接
+6. 如果所有搜索结果都是旧闻，请说明"暂无重要新闻"
 
 以JSON返回（不要markdown代码块）：
 {"title": "标题", "summary": "一句话摘要", "content": "正文"}`;
@@ -177,13 +280,16 @@ async function fetchCompanyNews(company, today, sql) {
     const id = `company-news-${company}-${today}-${timestamp}`;
     const sources = results.map(r => r.url);
 
-    await sql`
-      INSERT INTO news (id, date, company, title, summary, content, sources, category, read_time, is_keyword_search, timestamp, keywords)
-      VALUES (${id}, ${today}, ${company}, ${`【${today}】${title}`}, ${summary}, ${content}, ${JSON.stringify(sources)}, ${'company_news'}, ${'2分钟阅读'}, ${false}, ${timestamp}, ${JSON.stringify([company])})
-      ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, summary = EXCLUDED.summary, sources = EXCLUDED.sources
-    `;
-
-    console.log(`  ✅ ${company}: ${title}`);
+    if (sql) {
+      await sql`
+        INSERT INTO news (id, date, company, title, summary, content, sources, category, read_time, is_keyword_search, timestamp, keywords)
+        VALUES (${id}, ${today}, ${company}, ${`【${today}】${title}`}, ${summary}, ${content}, ${JSON.stringify(sources)}, ${'company_news'}, ${'2分钟阅读'}, ${false}, ${timestamp}, ${JSON.stringify([company])})
+        ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, summary = EXCLUDED.summary, sources = EXCLUDED.sources
+      `;
+      console.log(`  ✅ ${company}: ${title}`);
+    } else {
+      console.log(`  ✅ ${company}: ${title} (DRY_RUN)`);
+    }
     return { company, title };
   } catch (e) {
     console.error(`  ❌ ${company} AI处理失败:`, e.message);
@@ -198,20 +304,26 @@ async function main() {
   console.log(`📊 公司数: ${COMPANIES.length}`);
   console.log('');
 
-  if (!TAVILY_API_KEY || !DEEPSEEK_API_KEY || !DATABASE_URL) {
+  const dryRun = process.env.DRY_RUN === '1';
+  
+  if (!dryRun && (!TAVILY_API_KEY || !DEEPSEEK_API_KEY || !DATABASE_URL)) {
     console.error('❌ 缺少环境变量: TAVILY_API_KEY / DEEPSEEK_API_KEY / DATABASE_URL');
     process.exit(1);
   }
-
-  const sql = neon(DATABASE_URL);
-  await initDb(sql);
+  const sql = dryRun ? null : neon(DATABASE_URL);
+  
+  if (!dryRun) {
+    await initDb(sql);
+  } else {
+    console.log('🧪 DRY_RUN模式: 跳过数据库操作');
+  }
 
   const today = new Date().toISOString().split('T')[0];
   let successCount = 0;
 
   // 串行处理，避免 API 限速
   for (const company of COMPANIES) {
-    const result = await fetchCompanyNews(company, today, sql);
+    const result = await fetchCompanyNews(company, today, dryRun ? null : sql);
     if (result) successCount++;
     // 间隔1秒，防止限速
     await new Promise(r => setTimeout(r, 1000));
@@ -219,6 +331,9 @@ async function main() {
 
   console.log('');
   console.log(`🎉 完成! 成功抓取 ${successCount}/${COMPANIES.length} 家公司新闻`);
+  if (dryRun) {
+    console.log('📝 注意: 这是DRY_RUN测试，未实际写入数据库');
+  }
 }
 
 main().catch(e => {
