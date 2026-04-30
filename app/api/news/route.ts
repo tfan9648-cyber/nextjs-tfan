@@ -39,43 +39,43 @@ export async function GET(request: NextRequest) {
       }
       if (company && company !== 'all') {
         if (category) {
-          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) AND company = ${company} AND category = ${category} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) AND company = ${company} AND category = ${category} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         } else {
-          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) AND company = ${company} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) AND company = ${company} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         }
       } else {
         if (category) {
-          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) AND category = ${category} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) AND category = ${category} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         } else {
-          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ANY(${days}) ORDER BY date DESC, timestamp DESC LIMIT 200`;
         }
       }
     } else if (dateFilter && dateFilter !== 'all') {
       if (company && company !== 'all') {
         if (category) {
-          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} AND company = ${company} AND category = ${category} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} AND company = ${company} AND category = ${category} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         } else {
-          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} AND company = ${company} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} AND company = ${company} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         }
       } else {
         if (category) {
-          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} AND category = ${category} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} AND category = ${category} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         } else {
-          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE date = ${dateFilter} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         }
       }
     } else {
       if (company && company !== 'all') {
         if (category) {
-          rows = await sql`SELECT * FROM news WHERE company = ${company} AND category = ${category} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE company = ${company} AND category = ${category} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         } else {
-          rows = await sql`SELECT * FROM news WHERE company = ${company} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE company = ${company} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         }
       } else {
         if (category) {
-          rows = await sql`SELECT * FROM news WHERE category = ${category} ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news WHERE category = ${category} ORDER BY date DESC, timestamp DESC LIMIT 200`;
         } else {
-          rows = await sql`SELECT * FROM news ORDER BY date DESC, timestamp DESC`;
+          rows = await sql`SELECT * FROM news ORDER BY date DESC, timestamp DESC LIMIT 200`;
         }
       }
     }

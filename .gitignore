@@ -51,3 +51,5 @@ scripts/cron.log
 *.tsbuildinfo
 next-env.d.ts
 .env*.local
+scripts/fetch-daily-news.mjs.bak
+test_tavily_modifications.md

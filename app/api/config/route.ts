@@ -50,6 +50,12 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
+    const apiKey = request.headers.get('x-api-key');
+    const secretKey = process.env.API_SECRET_KEY;
+    if (!secretKey || apiKey !== secretKey) {
+      return NextResponse.json({ error: '未授权访问' }, { status: 401 });
+    }
+
     const data = await request.json();
     
     // 读取现有配置

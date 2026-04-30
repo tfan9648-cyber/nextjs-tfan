@@ -1,11 +1,15 @@
 import { neon } from '@neondatabase/serverless';
 
+let dbInitialized = false;
+
 export function getDb() {
   const sql = neon(process.env.DATABASE_URL || process.env.POSTGRES_URL || '');
   return sql;
 }
 
 export async function initDb() {
+  if (dbInitialized) return true;
+  
   const sql = getDb();
   await sql`
     CREATE TABLE IF NOT EXISTS news (
@@ -26,5 +30,10 @@ export async function initDb() {
   `;
   await sql`CREATE INDEX IF NOT EXISTS idx_news_date ON news(date)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_news_company ON news(company)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_news_category ON news(category)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_news_timestamp ON news(timestamp)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_news_date_company ON news(date, company)`;
+  
+  dbInitialized = true;
   return true;
 }

@@ -79,6 +79,11 @@ export default function Home() {
   const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // API Key authentication state
+  const [apiKey, setApiKey] = useState<string>('');
+  const [showKeyDialog, setShowKeyDialog] = useState(false);
+  const [keyInput, setKeyInput] = useState('');
+
   // === Init companies ===
   useEffect(() => {
     const stored = localStorage.getItem("companies");
@@ -90,6 +95,14 @@ export default function Home() {
       }
     } else {
       setCompanies(DEFAULT_COMPANIES);
+    }
+  }, []);
+
+  // === Load API Key from localStorage ===
+  useEffect(() => {
+    const saved = localStorage.getItem('api_key');
+    if (saved) {
+      setApiKey(saved);
     }
   }, []);
 
@@ -134,12 +147,23 @@ export default function Home() {
     localStorage.setItem("companies", JSON.stringify(editList));
     setEditing(false);
     try {
-      await fetch("/api/update-companies", {
+      const res = await fetch("/api/update-companies", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          'x-api-key': apiKey
+        },
         body: JSON.stringify({ companies: editList }),
       });
-    } catch {}
+      if (res.status === 401) {
+        setShowKeyDialog(true);
+        setError('请输入访问密钥');
+        return;
+      }
+      if (!res.ok) throw new Error('更新公司列表失败');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '更新公司列表失败');
+    }
   };
 
   const addCompany = () => {
@@ -181,9 +205,17 @@ export default function Home() {
     try {
       const res = await fetch("/api/search-data", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          'x-api-key': apiKey
+        },
         body: JSON.stringify({ keywords: kws }),
       });
+      if (res.status === 401) {
+        setShowKeyDialog(true);
+        setError('请输入访问密钥');
+        return;
+      }
       if (!res.ok) throw new Error("查找数据失败");
       await fetchNews();
     } catch (e: unknown) {
@@ -201,9 +233,17 @@ export default function Home() {
     try {
       const res = await fetch("/api/investment-report", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          'x-api-key': apiKey
+        },
         body: JSON.stringify({ keywords: kws }),
       });
+      if (res.status === 401) {
+        setShowKeyDialog(true);
+        setError('请输入访问密钥');
+        return;
+      }
       if (!res.ok) throw new Error("生成报告失败");
       await fetchNews();
     } catch (e: unknown) {
@@ -471,6 +511,14 @@ export default function Home() {
                   报告生成可能需要30-60秒
                 </p>
               )}
+              <div className="mt-4 pt-3 border-t flex justify-center">
+                <button
+                  onClick={() => setShowKeyDialog(true)}
+                  className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                >
+                  {apiKey ? '🔓 已认证' : '🔐 设置密钥'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -558,6 +606,59 @@ export default function Home() {
                 className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-sm rounded-lg transition-colors"
               >
                 关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* === API Key Input Dialog === */}
+      {showKeyDialog && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" 
+          onClick={() => setShowKeyDialog(false)}
+        >
+          <div 
+            className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6" 
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-bold text-gray-800 mb-4">🔐 请输入访问密钥</h3>
+            <p className="text-sm text-gray-500 mb-4">需要密钥才能使用搜索、报告和管理功能。密钥将保存在浏览器中。</p>
+            <input
+              type="password"
+              value={keyInput}
+              onChange={e => setKeyInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && keyInput.trim()) {
+                  setApiKey(keyInput.trim());
+                  localStorage.setItem('api_key', keyInput.trim());
+                  setShowKeyDialog(false);
+                  setError('');
+                }
+              }}
+              placeholder="输入密钥..."
+              className="w-full border rounded-lg px-4 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoFocus
+            />
+            <div className="flex gap-2 justify-end">
+              <button 
+                onClick={() => setShowKeyDialog(false)} 
+                className="px-4 py-2 text-gray-500 hover:bg-gray-100 rounded-lg"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => {
+                  if (keyInput.trim()) {
+                    setApiKey(keyInput.trim());
+                    localStorage.setItem('api_key', keyInput.trim());
+                    setShowKeyDialog(false);
+                    setError('');
+                  }
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+              >
+                确认
               </button>
             </div>
           </div>
