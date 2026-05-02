@@ -16,7 +16,7 @@ async function callDeepSeek(prompt: string): Promise<string> {
     body: JSON.stringify({
       model: DEEPSEEK_MODEL,
       messages: [
-        { role: 'system', content: '你是一位专业的投资分析师，擅长撰写深度投资分析报告。报告要求数据翔实、分析深入、逻辑清晰。' },
+        { role: 'system', content: '你是一位专业的投资分析师，擅长撰写深度投资分析报告。报告要求数据翔实、分析深入、逻辑清晰。输出纯文本，不要使用任何markdown格式符号（如*、#、-列表等）。用换行和空行分隔段落，用数字序号代替列表符号。' },
         { role: 'user', content: prompt },
       ],
       temperature: 0.7,
@@ -73,7 +73,7 @@ ${searchContext || '（未搜索到相关信息，请根据你的专业知识撰
 5. 最后附上信息来源列表
 
 请以以下JSON格式返回（不要包含markdown代码块标记）：
-{"title": "报告标题", "content": "报告正文（支持markdown格式）"}`;
+{"title": "报告标题", "content": "报告正文（使用纯文本格式，不要使用markdown符号）"}`;
 
     let title = `${validKeywords.slice(0, 2).join('·')}投资分析`;
     let content = '';
@@ -91,15 +91,15 @@ ${searchContext || '（未搜索到相关信息，请根据你的专业知识撰
       }
     } catch (aiError) {
       console.error('DeepSeek API call failed:', aiError);
-      content = `# ${validKeywords.join('、')} 投资分析报告\n\n`;
-      content += `> AI分析服务暂时不可用，以下为搜索结果摘要。\n\n`;
+      content = `${validKeywords.join('、')} 投资分析报告\n\n`;
+      content += `AI分析服务暂时不可用，以下为搜索结果摘要。\n\n`;
       if (searchResults.length > 0) {
-        content += `## 搜索结果\n\n`;
+        content += `搜索结果：\n\n`;
         searchResults.forEach((r, i) => {
-          content += `### ${i + 1}. ${r.title}\n${r.snippet}\n\n来源: ${r.url}\n\n`;
+          content += `${i + 1}. ${r.title}\n   ${r.snippet}\n   来源: ${r.url}\n\n`;
         });
       }
-      content += `\n请稍后重试以获取完整的AI分析报告。`;
+      content += `请稍后重试以获取完整的AI分析报告。`;
     }
 
     // 标题不超过20字
