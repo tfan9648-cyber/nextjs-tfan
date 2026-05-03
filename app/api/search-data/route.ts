@@ -75,12 +75,13 @@ ${searchContext}
         content = await callDeepSeek(prompt);
       } catch (aiError) {
         console.error('DeepSeek failed, using raw results:', aiError);
-        content = `🔍 数据查询结果：${validKeywords.join('、')}\n\n`;
+        content = `数据查询结果：${validKeywords.join('、')}\n\n`;
         searchResults.forEach((r, i) => {
-          content += `${i + 1}. **${r.title}**\n`;
-          if (r.snippet) content += `   ${r.snippet}\n`;
+          content += `${i + 1}. ${r.title}\n`;
+          if (r.snippet) content += `   ${r.snippet.slice(0, 200)}\n`;
           content += `   来源: ${r.url}\n\n`;
         });
+        content += '\n注：AI整理服务暂时不可用，以上为原始搜索摘要。';
       }
     } else {
       // Tavily 无结果 - 让 DeepSeek 用知识库回答

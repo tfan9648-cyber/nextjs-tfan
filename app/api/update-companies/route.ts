@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
-
-// 配置文件路径
-const configPath = path.join(process.cwd(), 'data', 'config.json');
+import { getDb, initDb } from '@/lib/db';
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,10 +18,9 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // 验证公司名称
-    const validCompanies = companies.filter(c => {
+    const validCompanies = companies.filter((c: unknown) => {
       return typeof c === 'string' && c.trim().length > 0;
-    }).map(c => c.trim());
+    }).map((c: string) => c.trim());
     
     if (validCompanies.length === 0) {
       return NextResponse.json(
@@ -34,43 +29,25 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // 读取现有配置
-    let existingConfig = {};
-    if (fs.existsSync(configPath)) {
-      const configData = fs.readFileSync(configPath, 'utf8');
-      existingConfig = JSON.parse(configData);
-    } else {
-      // 如果配置文件不存在，创建基础配置
-      existingConfig = {
-        lastUpdate: new Date().toISOString(),
-        totalNews: 0,
-        systemStatus: "running",
-        nextAutoUpdate: new Date(new Date().getTime() + 24 * 60 * 60 * 1000).toISOString(),
-        version: "2.0",
-        defaultKeywords: [
-          "人工智能发展趋势",
-          "云计算市场分析", 
-          "电商行业竞争",
-          "新能源汽车政策",
-          "数字货币监管"
-        ]
-      };
-    }
+    const sql = getDb();
+    await initDb();
     
-    // 更新公司列表
-    const updatedConfig = {
-      ...existingConfig,
-      supportedCompanies: validCompanies,
-      lastUpdate: new Date().toISOString()
-    };
+    // 用数据库存公司列表（config表，key-value形式）
+    await sql`
+      CREATE TABLE IF NOT EXISTS config (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
     
-    // 确保data目录存在
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    await sql`
+      INSERT INTO config (key, value, updated_at)
+      VALUES ('supported_companies', ${JSON.stringify(validCompanies)}::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    `;
     
-    // 写入配置文件
-    fs.writeFileSync(configPath, JSON.stringify(updatedConfig, null, 2), 'utf8');
-    
-    console.log(`✅ 公司列表已更新: ${validCompanies.length} 家公司: ${validCompanies.slice(0, 3).join(', ')}${validCompanies.length > 3 ? '...' : ''}`);
+    console.log(`✅ 公司列表已更新: ${validCompanies.length} 家公司`);
     
     return NextResponse.json({ 
       success: true, 
@@ -90,22 +67,40 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   try {
-    if (!fs.existsSync(configPath)) {
+    const sql = getDb();
+    await initDb();
+    
+    await sql`
+      CREATE TABLE IF NOT EXISTS config (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    
+    const rows = await sql`SELECT value FROM config WHERE key = 'supported_companies'`;
+    
+    if (rows.length === 0) {
+      // 返回默认公司列表
+      const defaultCompanies = [
+        '中国平安', '美的集团', '伊利股份', '招商银行', '贵州茅台',
+        '泸州老窖', '腾讯控股', '阿里巴巴', '万华化学', '福耀玻璃',
+        '昱能科技', '凌霄泵业', '长江电力'
+      ];
       return NextResponse.json({
-        success: false,
-        message: '配置文件不存在',
-        companies: []
+        success: true,
+        companies: defaultCompanies,
+        companyCount: defaultCompanies.length,
+        lastUpdate: null
       });
     }
     
-    const configData = fs.readFileSync(configPath, 'utf8');
-    const config = JSON.parse(configData);
-    
+    const companies = rows[0].value;
     return NextResponse.json({
       success: true,
-      companies: config.supportedCompanies || [],
-      companyCount: config.supportedCompanies?.length || 0,
-      lastUpdate: config.lastUpdate
+      companies,
+      companyCount: companies.length,
+      lastUpdate: null
     });
   } catch (error) {
     console.error('获取公司列表出错:', error);
