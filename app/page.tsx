@@ -97,7 +97,7 @@ export default function Home() {
     const k = keyInput.trim();
     if (!k) return;
     setApiKey(k);
-    localStorage.setItem('api_key', k);
+    sessionStorage.setItem('api_key', k);
     setShowKeyDialog(false);
     setKeyInput('');
     setError('');
@@ -129,9 +129,9 @@ export default function Home() {
     }
   }, []);
 
-  // === Load API Key from localStorage ===
+  // === Load API Key from sessionStorage ===
   useEffect(() => {
-    const saved = localStorage.getItem('api_key');
+    const saved = sessionStorage.getItem('api_key');
     if (saved) {
       setApiKey(saved);
     }
@@ -177,6 +177,18 @@ export default function Home() {
     setCompanies(editList);
     localStorage.setItem("companies", JSON.stringify(editList));
     setEditing(false);
+    
+    // 如果 apiKey 为空，先弹出密码对话框
+    if (!apiKey) {
+      openKeyDialog((key) => {
+        setApiKey(key);
+        sessionStorage.setItem('api_key', key);
+        // 重新调用 saveCompanies
+        saveCompanies();
+      });
+      return;
+    }
+    
     const doSave = async (key: string) => {
       try {
         const res = await fetch("/api/update-companies", {
@@ -185,8 +197,11 @@ export default function Home() {
           body: JSON.stringify({ companies: editList }),
         });
         if (res.status === 401) {
+          // 401 时清除 sessionStorage 并重新弹框
+          sessionStorage.removeItem('api_key');
+          setApiKey('');
           openKeyDialog((newKey) => doSave(newKey));
-          setError('请输入访问密钥后重试');
+          setError('访问密钥无效，请重新输入');
           return;
         }
         if (!res.ok) throw new Error('更新公司列表失败');
@@ -231,6 +246,18 @@ export default function Home() {
   const handleSearchData = async () => {
     const kws = getActiveKeywords();
     if (!kws.length) return;
+    
+    // 如果 apiKey 为空，先弹出密码对话框
+    if (!apiKey) {
+      openKeyDialog((key) => {
+        setApiKey(key);
+        sessionStorage.setItem('api_key', key);
+        // 重新调用 handleSearchData
+        handleSearchData();
+      });
+      return;
+    }
+    
     setSearchLoading(true);
     setError("");
     const doSearch = async (key: string) => {
@@ -241,8 +268,11 @@ export default function Home() {
           body: JSON.stringify({ keywords: kws }),
         });
         if (res.status === 401) {
+          // 401 时清除 sessionStorage 并重新弹框
+          sessionStorage.removeItem('api_key');
+          setApiKey('');
           openKeyDialog((newKey) => doSearch(newKey));
-          setError('请输入访问密钥后重试');
+          setError('访问密钥无效，请重新输入');
           setSearchLoading(false);
           return;
         }
@@ -260,6 +290,18 @@ export default function Home() {
   const handleReport = async () => {
     const kws = getActiveKeywords();
     if (!kws.length) return;
+    
+    // 如果 apiKey 为空，先弹出密码对话框
+    if (!apiKey) {
+      openKeyDialog((key) => {
+        setApiKey(key);
+        sessionStorage.setItem('api_key', key);
+        // 重新调用 handleReport
+        handleReport();
+      });
+      return;
+    }
+    
     setReportLoading(true);
     setError("");
     const doReport = async (key: string) => {
@@ -270,8 +312,11 @@ export default function Home() {
           body: JSON.stringify({ keywords: kws }),
         });
         if (res.status === 401) {
+          // 401 时清除 sessionStorage 并重新弹框
+          sessionStorage.removeItem('api_key');
+          setApiKey('');
           openKeyDialog((newKey) => doReport(newKey));
-          setError('请输入访问密钥后重试');
+          setError('访问密钥无效，请重新输入');
           setReportLoading(false);
           return;
         }
