@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, initDb } from '@/lib/db';
 import { searchFinanceData, formatSearchContext } from '@/lib/tavily';
 
+export const maxDuration = 60;
+
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://api.siliconflow.cn/v1';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-ai/DeepSeek-V3.2';
@@ -22,7 +24,7 @@ async function callDeepSeek(prompt: string): Promise<string> {
       temperature: 0.1,
       max_tokens: 1500,
     }),
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(30000),
   });
 
   if (!res.ok) {
