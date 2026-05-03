@@ -165,7 +165,7 @@ export async function searchFinanceData(
   
   return searchTavily(query, {
     maxResults,
-    searchDepth: 'basic',
+    searchDepth: 'advanced',
     topic: 'general',
     timeRange: 'month',
     includeDomains: CN_FINANCE_DOMAINS,

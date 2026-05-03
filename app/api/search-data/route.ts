@@ -16,11 +16,11 @@ async function callDeepSeek(prompt: string): Promise<string> {
     body: JSON.stringify({
       model: DEEPSEEK_MODEL,
       messages: [
-        { role: 'system', content: '你是财务数据提取工具。只输出搜索结果中找到的具体数字，不做分析评论。\n\n规则：\n1. 每条数据一行，格式：指标名称：数值\n2. 标注报告期（如2026年一季度）\n3. 不要输出任何markdown符号（不要* # - | 等）\n4. 不要分析、不要评论、不要建议\n5. 没找到的数据不要编造，直接不写\n6. 纯文本输出，用换行分隔' },
+        { role: 'system', content: '你是财务数据提取工具。从搜索结果中提取所有能找到的具体财务数字。\n\n规则：\n1. 尽可能列出所有主要财务指标（营收、净利润、扣非净利润、EPS、每股净资产、ROE、毛利率、净利率、现金流、同比增长率等）\n2. 每条数据一行，格式：指标名称：数值\n3. 标注报告期（如2026年一季度）\n4. 不要输出任何markdown符号（不要* # - | 等）\n5. 不要分析、不要评论、不要建议\n6. 没找到的数据不要编造\n7. 纯文本输出，用换行分隔' },
         { role: 'user', content: prompt },
       ],
       temperature: 0.1,
-      max_tokens: 800,
+      max_tokens: 1500,
     }),
     signal: AbortSignal.timeout(120000),
   });
