@@ -165,11 +165,11 @@ export async function searchFinanceData(
   
   return searchTavily(query, {
     maxResults,
-    searchDepth: 'advanced',
+    searchDepth: 'basic',
     topic: 'general',
     timeRange: 'month',
     includeDomains: CN_FINANCE_DOMAINS,
-    includeRawContent: true,
+    includeRawContent: false,
   });
 }
 
@@ -178,14 +178,9 @@ export async function searchFinanceData(
  */
 export function formatSearchContext(results: TavilySearchResult[]): string {
   if (results.length === 0) return '';
-  let context = '以下是搜索到的相关信息：\n\n';
+  let context = '搜索结果：\n\n';
   results.forEach((r, i) => {
     context += `${i + 1}. ${r.title}\n   ${r.snippet.slice(0, 300)}\n`;
-    // 只取原始内容的前1500字符，最多取前5条的rawContent
-    if (r.rawContent && i < 5) {
-      const truncated = r.rawContent.slice(0, 1500);
-      context += `   详细内容: ${truncated}\n`;
-    }
     context += `   来源: ${r.url}\n\n`;
   });
   return context;

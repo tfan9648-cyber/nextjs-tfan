@@ -16,11 +16,11 @@ async function callDeepSeek(prompt: string): Promise<string> {
     body: JSON.stringify({
       model: DEEPSEEK_MODEL,
       messages: [
-        { role: 'system', content: '你是一位专业的财经数据分析师。请根据搜索到的信息，提取关键财务数据。\n重点提取以下指标（如果搜索结果中有的话）：\n- 营业收入及同比增长率\n- 净利润及同比增长率\n - 扣非净利润及同比增长率\n- 每股收益（EPS）\n- 每股净资产\n- 净资产收益率（ROE）\n- 毛利率\n- 净利率\n- 经营性现金流\n\n要求：\n1. 数据必须是具体的数字，不能只说"增长"而不给数据\n2. 用清晰的格式呈现，但不要使用markdown表格或列表符号，使用纯文本格式\n3. 标注数据的报告期和来源\n4. 如果某些指标未找到，标注"未查到"\n5. 输出纯文本，不要使用任何markdown格式符号（如*、#、-列表等）。用换行和空行分隔段落，用数字序号代替列表符号。' },
+        { role: 'system', content: '你是财务数据提取工具。只输出搜索结果中找到的具体数字，不做分析评论。\n\n规则：\n1. 每条数据一行，格式：指标名称：数值\n2. 标注报告期（如2026年一季度）\n3. 不要输出任何markdown符号（不要* # - | 等）\n4. 不要分析、不要评论、不要建议\n5. 没找到的数据不要编造，直接不写\n6. 纯文本输出，用换行分隔' },
         { role: 'user', content: prompt },
       ],
-      temperature: 0.3,
-      max_tokens: 4000,
+      temperature: 0.1,
+      max_tokens: 800,
     }),
     signal: AbortSignal.timeout(120000),
   });
@@ -60,16 +60,11 @@ export async function POST(request: NextRequest) {
     if (searchResults.length > 0) {
       const searchContext = formatSearchContext(searchResults);
 
-      const prompt = `用户查询的关键词：${validKeywords.join('、')}
+      const prompt = `查询关键词：${validKeywords.join('、')}
 
 ${searchContext}
 
-请根据以上搜索结果，提取与"${validKeywords.join('、')}"相关的关键财务数据。要求：
-1. 必须提取具体数字（营业收入、净利润、每股收益、净资产收益率等）
-2. 用清晰的纯文本格式呈现，不要使用markdown符号
-3. 标注报告期（如2026年一季度）和信息来源
-4. 对比上年同期的变化（如果有数据）
-5. 如果搜索结果中没有具体数字，明确说明"未在搜索结果中找到具体数据"并建议查阅巨潮资讯网(cninfo.com.cn)或东方财富网的原始公告`;
+请从以上搜索结果中提取与"${validKeywords.join('、')}"相关的具体财务数字。每条数据一行，只要数字，不要分析。`;
 
       try {
         content = await callDeepSeek(prompt);
@@ -86,11 +81,11 @@ ${searchContext}
     } else {
       // Tavily 无结果 - 让 DeepSeek 用知识库回答
       try {
-        const prompt = `用户想查询以下信息：${validKeywords.join('、')}
+        const prompt = `查询关键词：${validKeywords.join('、')}
 
-搜索引擎未返回结果。请根据你的知识，尽可能提供相关的财务数据信息。重点查找以下指标：\n- 营业收入及增长率\n- 净利润及增长率\n- 每股收益（EPS）\n- 净资产收益率（ROE）\n\n如果数据可能不准确，请注明"数据可能不准，请以官方公告为准"。`;
+搜索未返回结果。请根据你的知识提供相关财务数字。每条数据一行，只要数字，不要分析。没有的数据不要编造。`;
         content = await callDeepSeek(prompt);
-        content += '\n\n⚠️ 注：以上信息来自AI知识库，可能不是最新数据，请以官方公告为准。建议查阅巨潮资讯网(cninfo.com.cn)或东方财富网的原始公告。';
+        content += '\n\n注：以上来自AI知识库，可能不是最新数据，请以官方公告为准。';
       } catch {
         content = `未搜索到相关数据。建议：\n1. 访问巨潮资讯网(cninfo.com.cn)直接查询原版公告\n2. 访问东方财富网(eastmoney.com)查看最新财报\n3. 确认公司名称是否正确（使用全称或股票代码）\n4. 财报数据通常在报告期结束后1-3个月内发布`;
       }
