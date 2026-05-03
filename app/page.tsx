@@ -81,12 +81,16 @@ export default function Home() {
 
   // API Key authentication state
   const [apiKey, setApiKey] = useState<string>('');
+  const apiKeyRef = useRef<string>(''); // ref 避免闭包捕获旧值
   const [showKeyDialog, setShowKeyDialog] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   // 验证后需要重试的动作（401 后保存，密码输入成功后重放）
   const pendingActionRef = useRef<((key: string) => void) | null>(null);
 
-  // 打开密码弹框时，总是清空输入，避免浏览器 autofill
+  // 同步 apiKey state 到 ref
+  useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
+
+  // 打开密码弹框时，总是清空输入
   const openKeyDialog = useCallback((pending?: (key: string) => void) => {
     setKeyInput('');
     if (pending) pendingActionRef.current = pending;
@@ -97,6 +101,7 @@ export default function Home() {
     const k = keyInput.trim();
     if (!k) return;
     setApiKey(k);
+    apiKeyRef.current = k;
     sessionStorage.setItem('api_key', k);
     setShowKeyDialog(false);
     setKeyInput('');
@@ -178,38 +183,49 @@ export default function Home() {
     localStorage.setItem("companies", JSON.stringify(editList));
     setEditing(false);
     
-    // 如果 apiKey 为空，先弹出密码对话框
-    if (!apiKey) {
+    const currentKey = apiKeyRef.current;
+    if (!currentKey) {
       openKeyDialog((key) => {
-        setApiKey(key);
-        sessionStorage.setItem('api_key', key);
-        // 重新调用 saveCompanies
-        saveCompanies();
+        const doSaveWithKey = async (k: string) => {
+          try {
+            const res = await fetch("/api/update-companies", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", 'x-api-key': k },
+              body: JSON.stringify({ companies: editList }),
+            });
+            if (res.status === 401) {
+              setError('访问密钥无效');
+              sessionStorage.removeItem('api_key');
+              setApiKey(''); apiKeyRef.current = '';
+              return;
+            }
+            if (!res.ok) throw new Error('更新公司列表失败');
+          } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '更新公司列表失败');
+          }
+        };
+        doSaveWithKey(key);
       });
       return;
     }
     
-    const doSave = async (key: string) => {
-      try {
-        const res = await fetch("/api/update-companies", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", 'x-api-key': key },
-          body: JSON.stringify({ companies: editList }),
-        });
-        if (res.status === 401) {
-          // 401 时清除 sessionStorage 并重新弹框
-          sessionStorage.removeItem('api_key');
-          setApiKey('');
-          openKeyDialog((newKey) => doSave(newKey));
-          setError('访问密钥无效，请重新输入');
-          return;
-        }
-        if (!res.ok) throw new Error('更新公司列表失败');
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : '更新公司列表失败');
+    try {
+      const res = await fetch("/api/update-companies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", 'x-api-key': currentKey },
+        body: JSON.stringify({ companies: editList }),
+      });
+      if (res.status === 401) {
+        sessionStorage.removeItem('api_key');
+        setApiKey(''); apiKeyRef.current = '';
+        setError('访问密钥无效，请重新输入');
+        openKeyDialog();
+        return;
       }
-    };
-    await doSave(apiKey);
+      if (!res.ok) throw new Error('更新公司列表失败');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '更新公司列表失败');
+    }
   };
 
   const addCompany = () => {
@@ -247,88 +263,119 @@ export default function Home() {
     const kws = getActiveKeywords();
     if (!kws.length) return;
     
-    // 如果 apiKey 为空，先弹出密码对话框
-    if (!apiKey) {
+    const currentKey = apiKeyRef.current;
+    if (!currentKey) {
       openKeyDialog((key) => {
-        setApiKey(key);
-        sessionStorage.setItem('api_key', key);
-        // 重新调用 handleSearchData
-        handleSearchData();
+        // 用拿到的 key 直接发请求
+        (async () => {
+          setSearchLoading(true);
+          setError('');
+          try {
+            const res = await fetch("/api/search-data", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", 'x-api-key': key },
+              body: JSON.stringify({ keywords: kws }),
+            });
+            if (res.status === 401) {
+              setError('访问密钥无效');
+              sessionStorage.removeItem('api_key');
+              setApiKey(''); apiKeyRef.current = '';
+              return;
+            }
+            if (!res.ok) throw new Error('查找数据失败');
+            await fetchNews();
+          } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '查找数据失败');
+          } finally {
+            setSearchLoading(false);
+          }
+        })();
       });
       return;
     }
     
     setSearchLoading(true);
     setError("");
-    const doSearch = async (key: string) => {
-      try {
-        const res = await fetch("/api/search-data", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", 'x-api-key': key },
-          body: JSON.stringify({ keywords: kws }),
-        });
-        if (res.status === 401) {
-          // 401 时清除 sessionStorage 并重新弹框
-          sessionStorage.removeItem('api_key');
-          setApiKey('');
-          openKeyDialog((newKey) => doSearch(newKey));
-          setError('访问密钥无效，请重新输入');
-          setSearchLoading(false);
-          return;
-        }
-        if (!res.ok) throw new Error("查找数据失败");
-        await fetchNews();
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : "查找数据失败");
-      } finally {
+    try {
+      const res = await fetch("/api/search-data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", 'x-api-key': currentKey },
+        body: JSON.stringify({ keywords: kws }),
+      });
+      if (res.status === 401) {
+        sessionStorage.removeItem('api_key');
+        setApiKey(''); apiKeyRef.current = '';
+        setError('访问密钥无效，请重新输入');
+        openKeyDialog();
         setSearchLoading(false);
+        return;
       }
-    };
-    await doSearch(apiKey);
+      if (!res.ok) throw new Error("查找数据失败");
+      await fetchNews();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "查找数据失败");
+    } finally {
+      setSearchLoading(false);
+    }
   };
 
   const handleReport = async () => {
     const kws = getActiveKeywords();
     if (!kws.length) return;
     
-    // 如果 apiKey 为空，先弹出密码对话框
-    if (!apiKey) {
+    const currentKey = apiKeyRef.current;
+    if (!currentKey) {
       openKeyDialog((key) => {
-        setApiKey(key);
-        sessionStorage.setItem('api_key', key);
-        // 重新调用 handleReport
-        handleReport();
+        (async () => {
+          setReportLoading(true);
+          setError('');
+          try {
+            const res = await fetch("/api/investment-report", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", 'x-api-key': key },
+              body: JSON.stringify({ keywords: kws }),
+            });
+            if (res.status === 401) {
+              setError('访问密钥无效');
+              sessionStorage.removeItem('api_key');
+              setApiKey(''); apiKeyRef.current = '';
+              return;
+            }
+            if (!res.ok) throw new Error('生成报告失败');
+            await fetchNews();
+          } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '生成报告失败');
+          } finally {
+            setReportLoading(false);
+          }
+        })();
       });
       return;
     }
     
     setReportLoading(true);
     setError("");
-    const doReport = async (key: string) => {
-      try {
-        const res = await fetch("/api/investment-report", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", 'x-api-key': key },
-          body: JSON.stringify({ keywords: kws }),
-        });
-        if (res.status === 401) {
-          // 401 时清除 sessionStorage 并重新弹框
-          sessionStorage.removeItem('api_key');
-          setApiKey('');
-          openKeyDialog((newKey) => doReport(newKey));
-          setError('访问密钥无效，请重新输入');
-          setReportLoading(false);
-          return;
-        }
-        if (!res.ok) throw new Error("生成报告失败");
-        await fetchNews();
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : "生成报告失败");
-      } finally {
+    try {
+      const res = await fetch("/api/investment-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", 'x-api-key': currentKey },
+        body: JSON.stringify({ keywords: kws }),
+      });
+      if (res.status === 401) {
+        sessionStorage.removeItem('api_key');
+        setApiKey(''); apiKeyRef.current = '';
+        setError('访问密钥无效，请重新输入');
+        openKeyDialog();
         setReportLoading(false);
+        return;
       }
-    };
-    await doReport(apiKey);
+      if (!res.ok) throw new Error("生成报告失败");
+      await fetchNews();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "生成报告失败");
+    } finally {
+      setReportLoading(false);
+    }
   };
 
   // === Pagination ===
