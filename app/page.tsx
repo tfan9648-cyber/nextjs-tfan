@@ -689,19 +689,24 @@ export default function Home() {
                     信息来源
                   </h4>
                   <ul className="space-y-1">
-                    {selectedNews.sources.map((src, i) => (
-                      <li key={i}>
-                        <a
-                          href={src}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-sm text-blue-600 hover:underline flex items-center gap-1"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          {src}
-                        </a>
-                      </li>
-                    ))}
+                    {selectedNews.sources.map((src: any, i: number) => {
+                      const url = typeof src === 'string' ? src : (src?.url || '');
+                      const label = typeof src === 'string' ? src : (src?.title || src?.url || '');
+                      if (!url) return null;
+                      return (
+                        <li key={i}>
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-blue-600 hover:underline flex items-center gap-1"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            {label}
+                          </a>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               )}
