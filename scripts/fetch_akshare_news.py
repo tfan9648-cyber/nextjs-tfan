@@ -28,10 +28,10 @@ def fetch_stock_news(symbol: str) -> List[Dict[str, Any]]:
         
         # 中国时区（UTC+8）
         china_tz = timezone(timedelta(hours=8))
-        china_today = datetime.now(china_tz).date()
-        today_str = china_today.strftime("%Y-%m-%d")
+        now_china = datetime.now(china_tz)
+        cutoff = now_china - timedelta(hours=24)  # 24小时之前
         
-        today_news = []
+        recent_news = []
         
         for _, row in df.iterrows():
             publish_time = row.get('发布时间') or ''
@@ -52,9 +52,9 @@ def fetch_stock_news(symbol: str) -> List[Dict[str, Any]]:
                     # 转换为中国时区
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=china_tz)
-                    publish_date = dt.date()
                     
-                    if publish_date == china_today:
+                    # 24小时内才保留
+                    if dt >= cutoff:
                         news_item = {
                             "title": str(row.get('新闻标题', '')).strip(),
                             "content": str(row.get('新闻内容', '')).replace('\ue628', '').strip(),
@@ -64,22 +64,27 @@ def fetch_stock_news(symbol: str) -> List[Dict[str, Any]]:
                         }
                         # 确保所有字段不为空
                         if all(news_item.values()):
-                            today_news.append(news_item)
+                            recent_news.append(news_item)
                 else:
                     # 简单字符串匹配日期部分
+                    # 尝试简单日期匹配作为回退
                     date_part = publish_time.split(' ')[0]
-                    if date_part == today_str:
-                        news_item = {
-                            "title": str(row.get('新闻标题', '')).strip(),
-                            "content": str(row.get('新闻内容', '')).replace('\ue628', '').strip(),
-                            "source": str(row.get('文章来源', '')).strip(),
-                            "url": str(row.get('新闻链接', '')).strip(),
-                            "publishTime": publish_time.strip()
-                        }
-                        if all(news_item.values()):
-                            today_news.append(news_item)
+                    try:
+                        fallback_dt = datetime.strptime(date_part, "%Y-%m-%d").replace(tzinfo=china_tz)
+                        if fallback_dt >= cutoff:
+                            news_item = {
+                                "title": str(row.get('新闻标题', '')).strip(),
+                                "content": str(row.get('新闻内容', '')).replace('\ue628', '').strip(),
+                                "source": str(row.get('文章来源', '')).strip(),
+                                "url": str(row.get('新闻链接', '')).strip(),
+                                "publishTime": publish_time.strip()
+                            }
+                            if all(news_item.values()):
+                                recent_news.append(news_item)
+                    except ValueError:
+                        pass
         
-        return today_news
+        return recent_news[:5]  # 最多返回5条
     except Exception as e:
         print(f"[ERROR] AKShare 查询失败 ({symbol}): {e}", file=sys.stderr)
         return []

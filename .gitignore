@@ -1,55 +1,67 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# 环境变量文件
+.env
+.env.local
+.env.development
+.env.production
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# 日志文件
+*.log
 
-# testing
-/coverage
+# 运行时数据
+tmp/
+temp/
+node_modules/
 
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-# data files
-/data/news/
-/data/news_*.json
-/data/source_validation_*.json
-
-# python venv
-scripts/venv/
-scripts/__pycache__/
-scripts/*.log
-scripts/cron.log
-
-# typescript
-*.tsbuildinfo
+# Next.js / Vercel build
+.next/
+.vercel/
 next-env.d.ts
-.env*.local
-scripts/fetch-daily-news.mjs.bak
-test_tavily_modifications.md
+tsconfig.tsbuildinfo
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试和覆盖率
+coverage/
+.nyc_output/
+
+# Python 虚拟环境与缓存
+scripts/venv/
+scripts/akshare_venv/
+scripts/__pycache__/
+**/__pycache__/
+*.pyc
+
+# 抓取的新闻数据（按日生成，不入库）
+data/news/
+data/news_*.json
+data/source_validation_*.json
+
+# 临时测试 / 调试脚本（根目录）
+/test_*.mjs
+/test_*.js
+/test_*.cjs
+/test-*.js
+/check_*.mjs
+/delete_*.mjs
+/fix_*.mjs
+/fix_*.js
+/simple_test.mjs
+/diagnose_api.mjs
+/final_test.mjs
+/preview_smart_titles.mjs
+/update_existing_titles.mjs
+
+# scripts/ 下的临时测试与备份
+scripts/test_*.mjs
+scripts/test-*.mjs
+scripts/*.bak
+scripts/extract_fetch_function.js
+scripts/fix_akshare_date_range.js
