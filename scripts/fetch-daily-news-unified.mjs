@@ -71,10 +71,14 @@ const COMPANY_STOCK_MAP = {
   "阿里巴巴": null  // 港/美股
 };
 
-// === 获取当前日期 ===
+// === 获取当前日期（按北京时区取 today，全部用 24h 滑窗）===
 const now = new Date();
-const today = now.toISOString().split('T')[0];
-const twentyFourHoursAgo = now.getTime() - (24 * 60 * 60 * 1000);
+// 北京时区当前时刻
+const nowChina = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+const today = nowChina.toISOString().split('T')[0];
+// 严格 24h 截止：当前时间 - 24h（UTC 与 Beijing 都一致）
+const CUTOFF_MS = now.getTime() - (24 * 60 * 60 * 1000);
+const cutoffISO = new Date(CUTOFF_MS).toISOString();
 
 /**
  * Step 0: 测试数据库连接
@@ -256,33 +260,45 @@ async function searchNewsWithTavily(company) {
     }
 
     const aliases = getCompanyAliases(company);
-    // 信任 Tavily 服务器端的 days:1 筛选，不做客户端 published_date 二次过滤
-    // （因为 Tavily 返回的 published_date 常被填充为查询时刻，不是真实发布时间）
-    const filtered = data.results.filter(r => {
-      // 公司名相关性：标题或内容必须包含公司名/别称
+    // V3 严格筛选：
+    // 1) 必须有可解析的 published_date
+    // 2) published_date >= 当前 - 24h
+    // 3) 标题或 content 必须命中公司别称
+    let droppedNoDate = 0;
+    let droppedTooOld = 0;
+    let droppedIrrelevant = 0;
+    const filtered = (data.results || []).filter(r => {
+      const dateStr = r.published_date || r.publishedDate || null;
+      if (!dateStr) { droppedNoDate++; return false; }
+      const dt = new Date(dateStr);
+      if (isNaN(dt.getTime())) { droppedNoDate++; return false; }
+      if (dt.getTime() < CUTOFF_MS) { droppedTooOld++; return false; }
       const text = ((r.title || '') + ' ' + (r.content || '')).toLowerCase();
-      return aliases.some(a => text.includes(a.toLowerCase()));
+      const hit = aliases.some(a => text.includes(a.toLowerCase()));
+      if (!hit) { droppedIrrelevant++; return false; }
+      return true;
     });
 
     if (filtered.length === 0) {
-      console.log(`   ⚠️ 未找到与${company}相关的新闻`);
+      console.log(`   ⚠️ Tavily 无 24h 内相关新闻（无日期${droppedNoDate} / 过期${droppedTooOld} / 不相关${droppedIrrelevant}）`);
       return [];
     }
 
-    // 取前 5 条（按 Tavily 返回的 score 排序）
+    // 按 score 排序取前 5 条
+    filtered.sort((a, b) => (b.score || 0) - (a.score || 0));
     const top = filtered.slice(0, 5);
 
     const items = top.map(r => ({
       title: r.title || '',
       url: r.url || '',
       content: r.content || '',
-      source: new URL(r.url).hostname.replace(/^www\./, ''),
-      publishTime: r.published_date ? new Date(r.published_date) : new Date(),
+      source: (() => { try { return new URL(r.url).hostname.replace(/^www\./, ''); } catch { return r.url || 'unknown'; } })(),
+      publishTime: new Date(r.published_date),
       fromTavily: true,
       score: r.score || 0
     }));
 
-    console.log(`   ✅ Tavily 找到 ${items.length} 条相关新闻`);
+    console.log(`   ✅ Tavily 找到 ${items.length} 条 24h 内相关新闻（丢弃 无日期${droppedNoDate}/过期${droppedTooOld}/不相关${droppedIrrelevant}）`);
     return items;
   } catch (e) {
     console.error(`   ❌ Tavily失败: ${e.message}`);
@@ -347,10 +363,8 @@ ${newsText}`
 新闻内容：
 ${newsText}`;
 
-  // 更新禁止词列表，更严格
-  const bannedWords = ['重要动态', '业务动态', '最新进展', '公司公告', '重要新闻', '业务进展', '最新消息', 
-                      '动态概述', '公司新闻', '新闻快讯', '资讯快报', '最新动态', '新闻摘要', '简要新闻', 
-                      '新闻报道', '行业动态', '摘要', '简报', '快报', '资讯', '最新', '动态', '新闻'];
+  // V3 禁词（按方案精确指定，不过度扩张）
+  const bannedWords = ['重要动态', '业务进展', '公司公告', '最新消息', '最新进展', '业务动态'];
 
   try {
     console.log(`   🤖 调用DeepSeek总结...`);
@@ -413,51 +427,32 @@ ${newsText}`;
       throw new Error('缺少必需字段');
     }
 
-    // 严格的标题质量控制
-    const title = result.title.trim();
-    
-    // 检查必须包含具体事件/数据（不能全是虚词）
-    const detailIndicators = ['发布', '公布', '披露', '上涨', '下跌', '增长', '下降', '净利润', '收入', '营收', 
-                             '业绩', '合同', '订单', '签署', '合作', '协议', '投资', '融资', '收购', '并购',
-                             '分红', '派息', '改革', '重组', '转型', '创新', '专利', '产品', '服务', '市场',
-                             '亿元', '万元', '增长', '同比下降', '同比增长', '环比', '超预期', '不及预期',
-                             '突破', '创下', '新高', '创新高', '大幅', '明显', '显著', '稳健', '强劲', '疲软',
-                             '预计', '预测', '预期', '估值', '评级', '目标价', '看好', '看空', '买入', '卖出'];
-    
-    // 检查禁止词
+    // V3 标题质量控制
+    const title = (result.title || '').trim();
     const hasBannedWord = bannedWords.some(word => title.includes(word));
-    // 检查是否包含具体事件/数据（用正则更鲁棒）
-    const numberPattern = /\d+(\.\d+)?\s*(万|亿|%|元|股|件|家|人|年|次|倍|点|bps|项|个)/;
-    const actionPattern = /(发布|公布|披露|上涨|下跌|增长|下降|购买|出售|净利润|营收|营业收入|业绩|订单|合同|签署|签订|合作|协议|投资|融资|收购|并购|分红|派息|重组|转型|产品|上市|辞任|辞职|上任|任职|接棒|换帅|增持|减持|回购|流入|流出|出口|进口|中标|中选|获准|获批|估值|评级|到期|发行|完成|启动|实施|领涨|领跌|报价|成交|询价|涨价|停产|复产|检修)/;
-    const hasDetail = numberPattern.test(title) || actionPattern.test(title);
-    
-    // 标题太短可能有问题
     const titleTooShort = title.length < 8;
-    
-    // 标题为空
-    const titleEmpty = !title || title.trim().length === 0;
-    
-    // 如果标题为空、太短、含禁止词或没有具体事件，则质量检查失败
-    if (titleEmpty || hasBannedWord || !hasDetail || titleTooShort) {
-      console.log(`   ⚠️ 标题质量检查失败:`);
-      console.log(`     标题: "${title}"`);
-      console.log(`     是否含禁止词: ${hasBannedWord}`);
-      console.log(`     是否有具体事件: ${hasDetail}`);
-      console.log(`     标题长度: ${title.length}`);
+    const titleTooLong = title.length > 40;
+    const titleEmpty = title.length === 0;
+
+    if (titleEmpty || hasBannedWord || titleTooShort || titleTooLong) {
+      console.log(`   ⚠️ 标题质量检查失败: "${title}" (空=${titleEmpty} 含废词=${hasBannedWord} 过短=${titleTooShort} 过长=${titleTooLong})`);
       return { ...result, qualityCheckFailed: true };
     }
-    
-    console.log(`   ✅ 标题质量检查通过: "${title}"`);
 
-    // 确保字数限制
-    if (result.summary.length > 300) {
+    // V3 summary_short 严格校验：必须由 DeepSeek 返回，长度 30-200
+    const summaryShortRaw = (result.summary_short || '').trim();
+    if (summaryShortRaw.length < 30 || summaryShortRaw.length > 200) {
+      console.log(`   ⚠️ summary_short 长度不合格 (${summaryShortRaw.length})，视为生成失败`);
+      return { ...result, summary_short: summaryShortRaw, summaryShortFailed: true };
+    }
+    result.summary_short = summaryShortRaw;
+
+    // summary 长度兜底
+    if (result.summary && result.summary.length > 300) {
       result.summary = result.summary.substring(0, 300);
     }
-    if (result.summary_short && result.summary_short.length > 150) {
-      result.summary_short = result.summary_short.substring(0, 150);
-    } else if (!result.summary_short && result.summary) {
-      result.summary_short = result.summary.substring(0, 150);
-    }
+
+    console.log(`   ✅ 标题/摘要 质量通过: "${title}" (ss_len=${result.summary_short.length})`);
 
     console.log(`   ✅ 总结完成: "${title}"`);
     return result;
@@ -527,12 +522,12 @@ async function processGlobalFinance() {
     return false;
   }
 
-  // 3. 标题质量控制（重试一次）
-  if (summary.qualityCheckFailed) {
-    console.log('🔄 标题含废词，重试一次...');
+  // 3. 标题/摘要 质量控制（重试一次，仍废 → 跳过不入库）
+  if (summary.qualityCheckFailed || summary.summaryShortFailed) {
+    console.log(`🔄 时政财经质量检查失败 (titleBad=${!!summary.qualityCheckFailed} ssBad=${!!summary.summaryShortFailed})，重试一次...`);
     const retrySummary = await summarizeWithDeepSeek('时政大事·国际财经', newsItems, true);
-    if (!retrySummary || retrySummary.qualityCheckFailed) {
-      console.log('❌ 重试后标题仍不合格，跳过');
+    if (!retrySummary || retrySummary.qualityCheckFailed || retrySummary.summaryShortFailed) {
+      console.log('❌ 重试后仍不合格，跳过时政财经');
       return false;
     }
     summary = retrySummary;
@@ -616,16 +611,26 @@ async function processCompany(company) {
     return false;
   }
   
-  // 2. 信任 Tavily 服务端的 days:1 + AKShare 已做的 24h 过滤
-  // 不再做客户端 publishTime 二次过滤（Tavily 的 published_date 常被填充为查询时间，不准）
-  const recentNews = allNewsItems;
-  
+  // 2. 合并去重 + V3 严格 24h 二次过滤（铁律：< CUTOFF 一律丢弃）
+  const seenUrls = new Set();
+  const recentNews = [];
+  for (const item of allNewsItems) {
+    if (!item.publishTime) continue;
+    const dt = item.publishTime instanceof Date ? item.publishTime : new Date(item.publishTime);
+    if (isNaN(dt.getTime())) continue;
+    if (dt.getTime() < CUTOFF_MS) continue;
+    const key = (item.url || '').trim();
+    if (key && seenUrls.has(key)) continue;
+    if (key) seenUrls.add(key);
+    recentNews.push({ ...item, publishTime: dt });
+  }
+
   if (recentNews.length === 0) {
-    console.log(`⚠️  ${company}无新闻，跳过`);
+    console.log(`⚠️  ${company} 24h 内无相关新闻，跳过不入库（V3铁律）`);
     return false;
   }
-  
-  console.log(`   合并后${recentNews.length}条新闻`);
+
+  console.log(`   合并去重 + 24h 过滤后剩 ${recentNews.length} 条新闻（cutoff=${cutoffISO}）`);
   
   // 3. DeepSeek总结
   let summary = await summarizeWithDeepSeek(company, recentNews, false);
@@ -634,12 +639,12 @@ async function processCompany(company) {
     return false;
   }
   
-  // 4. 标题质量控制（重试一次）
-  if (summary.qualityCheckFailed) {
-    console.log(`🔄 ${company}标题含废词，重试一次...`);
+  // 4. 标题/摘要 质量控制（重试一次，仍废 → 跳过不入库）
+  if (summary.qualityCheckFailed || summary.summaryShortFailed) {
+    console.log(`🔄 ${company} 质量检查失败 (titleBad=${!!summary.qualityCheckFailed} ssBad=${!!summary.summaryShortFailed})，重试一次...`);
     const retrySummary = await summarizeWithDeepSeek(company, recentNews, false);
-    if (!retrySummary || retrySummary.qualityCheckFailed) {
-      console.log(`❌ ${company}重试后标题仍不合格，跳过`);
+    if (!retrySummary || retrySummary.qualityCheckFailed || retrySummary.summaryShortFailed) {
+      console.log(`❌ ${company} 重试后仍不合格，跳过`);
       return false;
     }
     summary = retrySummary;

@@ -1,123 +1,128 @@
 #!/home/tfan/projects/nextjs-tfan/scripts/venv/bin/python3
 """
-AKShare 新闻抓取脚本
-从东方财富获取指定股票的今日新闻，输出JSON格式
+AKShare 新闻抓取脚本（V3 严格 24h 过滤版）
+从东方财富获取指定股票的近 24 小时新闻，输出 JSON 数组到 stdout
 
 用法: python3 fetch_akshare_news.py <股票代码>
-输出: JSON 数组到 stdout
-格式: [{"title": "...", "content": "...", "source": "...", "url": "...", "publishTime": "..."}]
+输出格式: [{"title", "content", "source", "url", "publishTime"}]
+
+V3 关键约束:
+- cutoff = 当前北京时间 - 24h
+- publish_time < cutoff 的全部丢弃（不放宽）
+- publish_time 解析失败 → 丢弃（不做"今日"宽松匹配）
+- 输出的 publishTime 字段统一为 ISO 8601 (东八区)，便于上游 JS 直接 new Date()
 """
 
 import sys
 import json
 import argparse
-from datetime import datetime, date, timezone, timedelta
-from typing import List, Dict, Any
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional
 import warnings
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
+CHINA_TZ = timezone(timedelta(hours=8))
+
+
+def parse_publish_time(raw: str) -> Optional[datetime]:
+    """严格解析 AKShare 发布时间字段。无法解析返回 None。"""
+    if not raw or not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # 常见格式
+    fmts = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ]
+    for f in fmts:
+        try:
+            dt = datetime.strptime(raw, f)
+            return dt.replace(tzinfo=CHINA_TZ)
+        except ValueError:
+            continue
+    # 仅日期 → 视为当天 00:00（保守，再让 cutoff 比较）
+    for f in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            dt = datetime.strptime(raw, f)
+            return dt.replace(tzinfo=CHINA_TZ)
+        except ValueError:
+            continue
+    return None
+
 
 def fetch_stock_news(symbol: str) -> List[Dict[str, Any]]:
-    """获取指定股票的最新新闻，只保留今日的"""
+    """获取指定股票的最近 24 小时新闻"""
     try:
         import akshare as ak
         df = ak.stock_news_em(symbol=symbol)
-        if df.empty:
+        if df is None or df.empty:
             return []
-        
-        # 中国时区（UTC+8）
-        china_tz = timezone(timedelta(hours=8))
-        now_china = datetime.now(china_tz)
-        cutoff = now_china - timedelta(hours=24)  # 24小时之前
-        
-        recent_news = []
-        
+
+        now_china = datetime.now(CHINA_TZ)
+        cutoff = now_china - timedelta(hours=24)
+
+        recent: List[Dict[str, Any]] = []
         for _, row in df.iterrows():
-            publish_time = row.get('发布时间') or ''
-            # 提取日期部分（可能包含时间）
-            if isinstance(publish_time, str):
-                # 尝试解析多种时间格式
-                try:
-                    # 格式1: "2026-04-29 09:22:00"
-                    dt = datetime.strptime(publish_time, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    try:
-                        # 格式2: "2026-04-29"
-                        dt = datetime.strptime(publish_time, "%Y-%m-%d")
-                    except ValueError:
-                        dt = None
-                
-                if dt:
-                    # 转换为中国时区
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=china_tz)
-                    
-                    # 24小时内才保留
-                    if dt >= cutoff:
-                        news_item = {
-                            "title": str(row.get('新闻标题', '')).strip(),
-                            "content": str(row.get('新闻内容', '')).replace('\ue628', '').strip(),
-                            "source": str(row.get('文章来源', '')).strip(),
-                            "url": str(row.get('新闻链接', '')).strip(),
-                            "publishTime": publish_time.strip()
-                        }
-                        # 确保所有字段不为空
-                        if all(news_item.values()):
-                            recent_news.append(news_item)
-                else:
-                    # 简单字符串匹配日期部分
-                    # 尝试简单日期匹配作为回退
-                    date_part = publish_time.split(' ')[0]
-                    try:
-                        fallback_dt = datetime.strptime(date_part, "%Y-%m-%d").replace(tzinfo=china_tz)
-                        if fallback_dt >= cutoff:
-                            news_item = {
-                                "title": str(row.get('新闻标题', '')).strip(),
-                                "content": str(row.get('新闻内容', '')).replace('\ue628', '').strip(),
-                                "source": str(row.get('文章来源', '')).strip(),
-                                "url": str(row.get('新闻链接', '')).strip(),
-                                "publishTime": publish_time.strip()
-                            }
-                            if all(news_item.values()):
-                                recent_news.append(news_item)
-                    except ValueError:
-                        pass
-        
-        return recent_news[:5]  # 最多返回5条
+            raw_time = row.get('发布时间') or ''
+            dt = parse_publish_time(str(raw_time))
+            if dt is None:
+                # 时间无法解析 → 丢弃（V3 严格）
+                continue
+            if dt < cutoff:
+                continue
+
+            title = str(row.get('新闻标题', '')).strip()
+            content = str(row.get('新闻内容', '')).replace('\ue628', '').strip()
+            source = str(row.get('文章来源', '')).strip()
+            url = str(row.get('新闻链接', '')).strip()
+
+            if not title or not url:
+                continue
+
+            recent.append({
+                "title": title,
+                "content": content,
+                "source": source or "东方财富",
+                "url": url,
+                # 统一 ISO 8601（带时区）
+                "publishTime": dt.isoformat()
+            })
+
+        # 按时间倒序，最多 5 条
+        recent.sort(key=lambda x: x["publishTime"], reverse=True)
+        return recent[:5]
     except Exception as e:
         print(f"[ERROR] AKShare 查询失败 ({symbol}): {e}", file=sys.stderr)
         return []
 
 
 def validate_symbol(symbol: str) -> str:
-    """验证股票代码格式并转换为AKShare需要的格式"""
-    # 移除可能的空白字符
     symbol = symbol.strip()
-    # 检查是否为数字格式（A股）
     if symbol.isdigit():
-        # 补齐到6位（东财格式）
         return symbol.zfill(6)
     return symbol
 
 
 def main():
-    parser = argparse.ArgumentParser(description='从东方财富获取股票新闻')
+    parser = argparse.ArgumentParser(description='从东方财富获取股票新闻（严格24h）')
     parser.add_argument('symbol', help='股票代码（如: 000001）')
     parser.add_argument('--pretty', action='store_true', help='格式化JSON输出')
-    
     args = parser.parse_args()
-    symbol = validate_symbol(args.symbol)
-    
-    # 检查环境是否已导入akshare
+
     try:
-        import akshare
+        import akshare  # noqa: F401
     except ImportError:
-        print(f"[ERROR] 请确认AKShare已安装在虚拟环境中", file=sys.stderr)
+        print("[ERROR] 请确认 AKShare 已安装在虚拟环境中", file=sys.stderr)
         sys.exit(1)
-    
+
+    symbol = validate_symbol(args.symbol)
     news = fetch_stock_news(symbol)
-    
     indent = 2 if args.pretty else None
     print(json.dumps(news, ensure_ascii=False, indent=indent))
 
