@@ -19,7 +19,6 @@ import {
   FileText,
   Database,
   Loader2,
-  Sun,
 } from "lucide-react";
 
 interface NewsItem {
@@ -79,11 +78,6 @@ export default function Home() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [reportLoading, setReportLoading] = useState(false);
   const [error, setError] = useState("");
-
-  // === Morning Briefing state ===
-  const [briefings, setBriefings] = useState<NewsItem[]>([]);
-  const [briefingDate, setBriefingDate] = useState<string>("");
-  const [briefingOpen, setBriefingOpen] = useState(true);
 
   // API Key authentication state
   const [apiKey, setApiKey] = useState<string>('');
@@ -178,28 +172,19 @@ export default function Home() {
     fetchNews();
   }, [fetchNews]);
 
-  // === Fetch morning briefings (last 7 days) ===
-  useEffect(() => {
-    const loadBriefings = async () => {
-      try {
-        const res = await fetch(`/api/news?category=morning_briefing`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const list: NewsItem[] = (data.news || [])
-          .sort((a: NewsItem, b: NewsItem) => (a.date < b.date ? 1 : -1))
-          .slice(0, 7);
-        setBriefings(list);
-        if (list.length && !briefingDate) setBriefingDate(list[0].date);
-      } catch (e) {
-        // 静默失败
-      }
-    };
-    loadBriefings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const currentBriefing =
-    briefings.find((b) => b.date === briefingDate) || briefings[0] || null;
+  // === Delete a news item (with double-confirm) ===
+  const deleteNewsItem = async (id: string, title: string) => {
+    if (!confirm(`确定要删除这条要闻吗？\n\n${title}`)) return;
+    if (!confirm('再次确认：删除后无法恢复，确定继续？')) return;
+    try {
+      const res = await fetch(`/api/news?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('删除失败');
+      if (selectedNews?.id === id) setSelectedNews(null);
+      await fetchNews();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '删除失败');
+    }
+  };
 
   // === Company helpers ===
   const startEdit = () => {
@@ -430,60 +415,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* === Morning Briefing Section === */}
-      {briefings.length > 0 && (
-        <div className="px-4 lg:px-6 pt-4">
-          <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-            <div
-              className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-amber-50 to-orange-50 border-b cursor-pointer"
-              onClick={() => setBriefingOpen((o) => !o)}
-            >
-              <h2 className="font-bold text-gray-800 flex items-center gap-2">
-                <Sun className="w-5 h-5 text-amber-500" />
-                📰 政经晨报
-                {currentBriefing && (
-                  <span className="text-xs text-gray-500 font-normal ml-2">
-                    {currentBriefing.date}
-                  </span>
-                )}
-              </h2>
-              <div
-                className="flex items-center gap-2"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <select
-                  value={briefingDate}
-                  onChange={(e) => setBriefingDate(e.target.value)}
-                  className="appearance-none bg-white border rounded-lg px-3 py-1 pr-7 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300"
-                >
-                  {briefings.map((b) => (
-                    <option key={b.id} value={b.date}>
-                      {b.date}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => setBriefingOpen((o) => !o)}
-                  className="p-1 hover:bg-white/60 rounded text-gray-500"
-                  aria-label="toggle"
-                >
-                  <ChevronDown
-                    className={`w-4 h-4 transition-transform ${
-                      briefingOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-            {briefingOpen && currentBriefing && (
-              <pre className="px-4 py-4 text-sm text-gray-800 whitespace-pre-wrap font-sans leading-relaxed max-h-[60vh] overflow-y-auto">
-{currentBriefing.content}
-              </pre>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Main layout */}
       <div className="flex flex-col lg:flex-row gap-4 p-4 lg:p-6">
         {/* === Left Column === */}
@@ -631,12 +562,24 @@ export default function Home() {
                     className="py-3 px-2 cursor-pointer hover:bg-blue-50 rounded-lg transition-colors group"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm text-gray-800 group-hover:text-blue-600 font-medium truncate">
+                      <span className="text-sm text-gray-800 group-hover:text-blue-600 font-medium truncate flex-1">
                         {item.title}
                       </span>
-                      <span className="text-xs text-gray-400 whitespace-nowrap">
-                        {item.date}
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-xs text-gray-400 whitespace-nowrap">
+                          {item.date}
+                        </span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteNewsItem(item.id, item.title);
+                          }}
+                          title="删除此条"
+                          className="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </li>
                 ))}
