@@ -154,10 +154,12 @@ export default function Home() {
       const res = await fetch(`/api/news?${params}`);
       if (!res.ok) throw new Error("获取新闻失败");
       const data = await res.json();
-      const sorted = (data.news || []).sort(
-        (a: NewsItem, b: NewsItem) =>
-          new Date(b.date).getTime() - new Date(a.date).getTime()
-      );
+      const sorted = (data.news || []).sort((a: NewsItem, b: NewsItem) => {
+        const dateCmp = new Date(b.date).getTime() - new Date(a.date).getTime();
+        if (dateCmp !== 0) return dateCmp;
+        // 同一天按 timestamp 倒序，让最新写入的（如政经晨报）排在最前面
+        return (b.timestamp || 0) - (a.timestamp || 0);
+      });
       setNews(sorted);
       setNewsTotal(data.total || sorted.length);
       setPage(1);

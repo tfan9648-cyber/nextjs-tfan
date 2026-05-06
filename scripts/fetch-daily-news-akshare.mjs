@@ -238,8 +238,8 @@ async function writeToDatabase(company, summaryObj, newsItems) {
     const id = `company-news-${companySlug}-${today}-${timestamp}`;
     
     await sql`
-      INSERT INTO news (id, date, company, title, content, category, created_at)
-      VALUES (${id}, ${today}, ${company}, ${unifiedTitle}, ${fullContent}, 'company_news', NOW())
+      INSERT INTO news (id, date, company, title, content, category, timestamp, created_at)
+      VALUES (${id}, ${today}, ${company}, ${unifiedTitle}, ${fullContent}, 'company_news', ${timestamp}, NOW())
     `;
     
     return true;
