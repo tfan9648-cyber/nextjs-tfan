@@ -65,3 +65,4 @@ scripts/test-*.mjs
 scripts/*.bak
 scripts/extract_fetch_function.js
 scripts/fix_akshare_date_range.js
+scripts/_check.mjs

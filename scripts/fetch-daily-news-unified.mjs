@@ -13,6 +13,24 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { readFileSync } from 'fs';
 
+// === 数据库重试包装 ===
+// 用于应对 Neon 偶发抽风（控制面 500 / 网络抖动）
+async function withRetry(fn, label = 'DB operation', maxRetries = 3) {
+  const delays = [2000, 5000, 10000];
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = String(err && (err.message || err));
+      const isRetryable = /\b(500|502|503|504)\b|control plane|connection reset|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang up|network/i.test(msg);
+      if (!isRetryable || attempt >= maxRetries) throw err;
+      const delay = delays[attempt] || 10000;
+      console.log(`[RETRY] ${label} 失败: ${msg.slice(0,100)}，第 ${attempt+1} 次重试（共${maxRetries}次），等待 ${delay/1000}s...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
 // === 从.env加载环境变量 ===
 const __dirname = dirname(fileURLToPath(import.meta.url));
 try {
@@ -86,7 +104,7 @@ const cutoffISO = new Date(CUTOFF_MS).toISOString();
 async function testDatabaseConnection() {
   try {
     const sql = neon(DATABASE_URL);
-    const result = await sql`SELECT 1 as test`;
+    const result = await withRetry(() => sql`SELECT 1 as test`, 'testDatabaseConnection');
     console.log('✅ 数据库连接成功');
     return true;
   } catch (error) {
@@ -470,13 +488,13 @@ async function writeToDatabase(record) {
     const sql = neon(DATABASE_URL);
     
     // 删除今日同公司同类别旧记录
-    await sql`
+    await withRetry(() => sql`
       DELETE FROM news 
       WHERE date = ${record.date} AND company = ${record.company} AND category = ${record.category}
-    `;
+    `, `DELETE news ${record.company}/${record.category}`);
     
     // 插入新记录
-    await sql`
+    await withRetry(() => sql`
       INSERT INTO news (
         id, date, company, title, summary, summary_short, content, sources, category, keywords, created_at
       ) VALUES (
@@ -492,7 +510,7 @@ async function writeToDatabase(record) {
         ${JSON.stringify(record.keywords)},
         NOW()
       )
-    `;
+    `, `INSERT news ${record.company}/${record.category}`);
     
     console.log(`   💾 写入成功: ${record.company}`);
     return true;
