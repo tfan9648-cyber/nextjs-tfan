@@ -494,9 +494,10 @@ async function writeToDatabase(record) {
     `, `DELETE news ${record.company}/${record.category}`);
     
     // 插入新记录
+    const tsValue = record.timestamp || Date.now();
     await withRetry(() => sql`
       INSERT INTO news (
-        id, date, company, title, summary, summary_short, content, sources, category, keywords, created_at
+        id, date, company, title, summary, summary_short, content, sources, category, keywords, timestamp, created_at
       ) VALUES (
         ${record.id},
         ${record.date},
@@ -508,6 +509,7 @@ async function writeToDatabase(record) {
         ${JSON.stringify(record.sources)},
         ${record.category},
         ${JSON.stringify(record.keywords)},
+        ${tsValue},
         NOW()
       )
     `, `INSERT news ${record.company}/${record.category}`);
@@ -568,6 +570,7 @@ async function processGlobalFinance() {
   
   const record = {
     id: `daily-briefing-${today}-${timestamp}`,
+    timestamp: timestamp,
     date: today,
     company: '时政大事·国际财经',
     title: `【${today}】时政大事·${summary.title}`,
@@ -686,6 +689,7 @@ async function processCompany(company) {
   
   const record = {
     id: `company-news-${companySlug}-${today}-${timestamp}`,
+    timestamp: timestamp,
     date: today,
     company: company,
     title: `【${today}】${company}·${summary.title}`,
