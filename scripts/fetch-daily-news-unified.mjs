@@ -621,11 +621,11 @@ async function processCompany(company) {
     }
   }
   
-  // 总是尝试Tavily（兜底）
-  const tavilyNews = await searchNewsWithTavily(company);
-  if (tavilyNews && tavilyNews.length > 0) {
-    allNewsItems.push(...tavilyNews);
-  }
+  // 跳过 Tavily for company news (AKShare 覆盖 86%，节省 ~26 credits/day)
+  // const tavilyNews = await searchNewsWithTavily(company);
+  // if (tavilyNews && tavilyNews.length > 0) {
+  //   allNewsItems.push(...tavilyNews);
+  // }
   
   if (allNewsItems.length === 0) {
     console.log(`⚠️  ${company}无新闻，跳过`);
