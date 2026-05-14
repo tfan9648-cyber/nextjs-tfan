@@ -2,8 +2,8 @@
 /**
  * 统一抓取脚本：时政财经 + 公司新闻（V3方案完整实施）
  * 核心逻辑：
- * 1. 时政国际财经：Tavily搜索"今日国际财经 全球股市 大宗商品 汇率" → DeepSeek总结300字 → 写入数据库
- * 2. 遍历公司新闻：AKShare(如有) + Tavily → 合并 → 24小时过滤 → DeepSeek生成JSON → 写入数据库
+ * 1. 时政国际财经：已停用 Tavily，仅支持AKShare抓取公司新闻
+ * 2. 遍历公司新闻：AKShare → 24小时过滤 → DeepSeek生成JSON → 写入数据库
  * 3. 标题质量：严禁"重要动态/业务动态/最新进展/公司公告"等废词
  */
 
@@ -49,7 +49,7 @@ try {
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://api.siliconflow.cn/v1';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-ai/DeepSeek-V3.2';
-const TAVILY_API_KEY = process.env.TAVILY_API_KEY || '';
+// const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''; // 已停用 Tavily
 const DATABASE_URL = process.env.DATABASE_URL || '';
 
 // === 财经域名白名单 ===
@@ -136,53 +136,14 @@ function loadCompanies() {
 }
 
 /**
- * Step A: 时政国际财经 - Tavily搜索
+ * Step A: 时政国际财经 - Tavily搜索（已停用）
  */
 async function searchGlobalFinance() {
-  console.log('\n🌍 Step A: 时政国际财经搜索');
+  console.log('\n🌍 Step A: 时政国际财经搜索（已停用 Tavily）');
   console.log('='.repeat(40));
   
-  const query = "global stock market commodities forex today international finance";
-  
-  try {
-    console.log(`🔍 搜索查询: "${query}"`);
-    
-    const response = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        api_key: TAVILY_API_KEY,
-        query: query,
-        search_depth: "basic",
-        max_results: 5,
-        topic: "news",
-        days: 1
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Tavily API错误: ${response.status}`);
-    }
-
-    const data = await response.json();
-    if (!data.results || data.results.length === 0) {
-      console.log('⚠️ 未搜索到时政财经新闻');
-      return [];
-    }
-
-    console.log(`✅ 获取到${data.results.length}条时政财经新闻`);
-    return data.results.map(result => ({
-      title: result.title || '',
-      url: result.url || '',
-      content: result.content || '',
-      published_date: result.published_date || null,
-      score: result.score || 0,
-      source: new URL(result.url).hostname.replace(/^www\./, '')
-    }));
-  } catch (error) {
-    console.error(`❌ Tavily搜索失败: ${error.message}`);
-    return [];
-  }
+  console.log('⚠️ 时政财经搜索已停用（全面停用 Tavily），返回空结果');
+  return [];
 }
 
 /**
@@ -252,76 +213,12 @@ async function fetchNewsWithAKShare(company, symbol) {
 }
 
 /**
- * Step B-2: Tavily搜索公司新闻
+ * Step B-2: Tavily搜索公司新闻（已停用）
  */
 async function searchNewsWithTavily(company) {
-  console.log(`   Tavily深度搜索: "${company}"`);
-  try {
-    const response = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        api_key: TAVILY_API_KEY,
-        query: `${company} 最新公告 业绩 动态`,
-        search_depth: 'advanced',
-        max_results: 8,
-        topic: 'news',
-        days: 1,
-        include_domains: FINANCE_DOMAINS,
-      })
-    });
-    if (!response.ok) throw new Error(`Tavily API错误: ${response.status}`);
-    const data = await response.json();
-    if (!data.results || data.results.length === 0) {
-      console.log('   ⚠️ Tavily未找到');
-      return [];
-    }
-
-    const aliases = getCompanyAliases(company);
-    // V3 严格筛选：
-    // 1) 必须有可解析的 published_date
-    // 2) published_date >= 当前 - 24h
-    // 3) 标题或 content 必须命中公司别称
-    let droppedNoDate = 0;
-    let droppedTooOld = 0;
-    let droppedIrrelevant = 0;
-    const filtered = (data.results || []).filter(r => {
-      const dateStr = r.published_date || r.publishedDate || null;
-      if (!dateStr) { droppedNoDate++; return false; }
-      const dt = new Date(dateStr);
-      if (isNaN(dt.getTime())) { droppedNoDate++; return false; }
-      if (dt.getTime() < CUTOFF_MS) { droppedTooOld++; return false; }
-      const text = ((r.title || '') + ' ' + (r.content || '')).toLowerCase();
-      const hit = aliases.some(a => text.includes(a.toLowerCase()));
-      if (!hit) { droppedIrrelevant++; return false; }
-      return true;
-    });
-
-    if (filtered.length === 0) {
-      console.log(`   ⚠️ Tavily 无 24h 内相关新闻（无日期${droppedNoDate} / 过期${droppedTooOld} / 不相关${droppedIrrelevant}）`);
-      return [];
-    }
-
-    // 按 score 排序取前 5 条
-    filtered.sort((a, b) => (b.score || 0) - (a.score || 0));
-    const top = filtered.slice(0, 5);
-
-    const items = top.map(r => ({
-      title: r.title || '',
-      url: r.url || '',
-      content: r.content || '',
-      source: (() => { try { return new URL(r.url).hostname.replace(/^www\./, ''); } catch { return r.url || 'unknown'; } })(),
-      publishTime: new Date(r.published_date),
-      fromTavily: true,
-      score: r.score || 0
-    }));
-
-    console.log(`   ✅ Tavily 找到 ${items.length} 条 24h 内相关新闻（丢弃 无日期${droppedNoDate}/过期${droppedTooOld}/不相关${droppedIrrelevant}）`);
-    return items;
-  } catch (e) {
-    console.error(`   ❌ Tavily失败: ${e.message}`);
-    return [];
-  }
+  console.log(`   Tavily搜索（已停用）: "${company}"`);
+  console.log('   ⚠️ Tavily 已停用，返回空结果');
+  return [];
 }
 
 /**
@@ -702,7 +599,7 @@ async function processCompany(company) {
       source: item.source,
       publishTime: item.publishTime,
       fromAKShare: item.fromAKShare || false,
-      fromTavily: item.fromTavily || false,
+      fromTavily: false, // 已停用 Tavily
       score: item.score || 0
     })),
     category: 'company_news',
@@ -746,9 +643,9 @@ async function main() {
     console.error('❌ 缺少DATABASE_URL环境变量');
     process.exit(1);
   }
-  if (!TAVILY_API_KEY) {
-    console.warn('⚠️ 缺少TAVILY_API_KEY环境变量，时政财经和部分公司新闻可能无法获取');
-  }
+  // if (!TAVILY_API_KEY) {
+  //   console.warn('⚠️ 缺少TAVILY_API_KEY环境变量，时政财经和部分公司新闻可能无法获取');
+  // }
   
   // 测试数据库
   if (!await testDatabaseConnection()) {
@@ -768,20 +665,8 @@ async function main() {
   let companySuccess = 0;
   let companyFailed = 0;
   
-  // Step A: 处理时政财经
-  if (TAVILY_API_KEY) {
-    try {
-      globalSuccess = await processGlobalFinance();
-    } catch (error) {
-      console.error(`❌ 时政财经处理异常: ${error.message}`);
-      // 如果遇到速率限制，跳过继续处理公司新闻
-      if (error.message.includes('429')) {
-        console.log('⚠️ DeepSeek API速率限制，跳过时政财经继续处理公司新闻');
-      }
-    }
-  } else {
-    console.log('⚠️ 跳过时政财经（缺少TAVILY_API_KEY）');
-  }
+  // Step A: 处理时政财经（已停用 Tavily）
+  console.log('⚠️ 时政财经模块已停用（全面停用 Tavily）');
   
   // Step B: 处理公司新闻
   console.log(`\n🏢 开始处理${companies.length}家公司新闻`);
