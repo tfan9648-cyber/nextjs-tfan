@@ -43,21 +43,27 @@ const YFINANCE_COMPANY_MAP = {
   "阿里巴巴": "9988.HK"
 };
 
-// 从 config.json 动态读取公司列表
-function loadCompanies() {
+// 从数据库动态读取公司列表
+async function loadCompanies(sql) {
   try {
-    const currentDir = dirname(fileURLToPath(import.meta.url));
-    const configPath = join(currentDir, '..', 'data', 'config.json');
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (config.supportedCompanies && config.supportedCompanies.length > 0) {
-      console.log(`📋 从 config.json 加载 ${config.supportedCompanies.length} 家公司`);
-      return config.supportedCompanies;
+    // 先确保 config 表存在
+    await sql`CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`;
+    
+    const rows = await sql`SELECT value FROM config WHERE key = 'supported_companies'`;
+    if (rows.length > 0 && Array.isArray(rows[0].value) && rows[0].value.length > 0) {
+      console.log(`📋 从数据库加载 ${rows[0].value.length} 家公司`);
+      return rows[0].value;
     }
   } catch (error) {
-    console.log('⚠️  无法读取 config.json,使用默认公司列表');
+    console.error('⚠️ 从数据库读取公司列表失败:', error.message);
   }
-
-  // 默认使用两个映射表中的所有公司
+  
+  // 兜底：用硬编码默认列表
+  console.log('⚠️ 使用默认公司列表（数据库无数据）');
   return [...Object.keys(COMPANY_STOCK_MAP), ...Object.keys(YFINANCE_COMPANY_MAP)];
 }
 
@@ -196,6 +202,54 @@ print(json.dumps(result, ensure_ascii=False))
     return newsItems;
   } catch (error) {
     console.error(`❌ ${company} 抓取失败:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * 用 AKShare 自动查找公司对应的股票代码
+ */
+async function lookupStockSymbol(company) {
+  try {
+    const pythonScript = `
+import sys
+import json
+import akshare as ak
+
+company_name = sys.argv[1]
+df = ak.stock_info_a_code_name()
+# 精确匹配或包含匹配
+matches = df[df['name'].str.contains(company_name)]
+if len(matches) > 0:
+    print(matches.iloc[0]['code'])
+else:
+    # 尝试简称匹配（去掉"集团""股份"等后缀）
+    short_name = company_name.replace('集团', '').replace('股份', '').replace('控股', '')
+    matches = df[df['name'].str.contains(short_name)]
+    if len(matches) > 0:
+        print(matches.iloc[0]['code'])
+    else:
+        print('')
+`;
+    
+    const cleanEnv = { ...globalThis.process.env };
+    delete cleanEnv.HTTP_PROXY;
+    delete cleanEnv.HTTPS_PROXY;
+    delete cleanEnv.http_proxy;
+    delete cleanEnv.https_proxy;
+    delete cleanEnv.ALL_PROXY;
+    delete cleanEnv.all_proxy;
+    
+    const proc = spawnSync('python3', ['-c', pythonScript, company], {
+      encoding: 'utf-8',
+      timeout: 15000,
+      env: cleanEnv
+    });
+    
+    const output = (proc.stdout || '').trim();
+    return output || null;
+  } catch (error) {
+    console.error(`⚠️ ${company} 股票代码查找失败:`, error.message);
     return null;
   }
 }
@@ -464,7 +518,11 @@ async function main() {
     process.exit(1);
   }
 
-  const companies = loadCompanies();
+  // 初始化数据库连接
+  const sql = neon(DATABASE_URL);
+  
+  // 从数据库加载公司列表
+  const companies = await loadCompanies(sql);
   console.log(`🔍 处理 ${companies.length} 家公司\n`);
 
   let successCount = 0;
@@ -472,8 +530,6 @@ async function main() {
   let failCount = 0;
   const companySummaries = []; // 收集所有成功总结,用于生成晨报
 
-  // 初始化数据库连接和今日日期
-  const sql = neon(DATABASE_URL);
   const today = new Date().toISOString().split('T')[0];
 
   // 串行处理,避免 API 限速
@@ -492,9 +548,17 @@ async function main() {
       console.log(`🌐 ${company}: 使用 yfinance (${yfinanceTicker})`);
       newsItems = await fetchNewsWithYfinance(company, yfinanceTicker);
     } else {
-      console.log(`⏭️  ${company}: 无数据源,跳过`);
-      skipCount++;
-      continue;
+      // 新公司: 尝试自动查找股票代码
+      console.log(`🔍 ${company}: 尝试自动查找股票代码...`);
+      const foundSymbol = await lookupStockSymbol(company);
+      if (foundSymbol) {
+        console.log(`✅ ${company}: 找到股票代码 ${foundSymbol}`);
+        newsItems = await fetchStockNewsWithPython(company, foundSymbol);
+      } else {
+        console.log(`⏭️ ${company}: 无法找到股票代码,跳过`);
+        skipCount++;
+        continue;
+      }
     }
 
     if (!newsItems) {
