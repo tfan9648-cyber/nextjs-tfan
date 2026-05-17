@@ -58,13 +58,10 @@ async function loadCompanies(sql) {
       console.log(`📋 从数据库加载 ${rows[0].value.length} 家公司`);
       return rows[0].value;
     }
+    throw new Error('数据库 config 表中无 supported_companies 数据');
   } catch (error) {
-    console.error('⚠️ 从数据库读取公司列表失败:', error.message);
-  }
-  
-  // 兜底：用硬编码默认列表
-  console.log('⚠️ 使用默认公司列表（数据库无数据）');
-  return [...Object.keys(COMPANY_STOCK_MAP), ...Object.keys(YFINANCE_COMPANY_MAP)];
+    console.error('❌ 从数据库读取公司列表失败:', error.message);
+    throw error;
 }
 
 /**
