@@ -132,8 +132,8 @@ if not df.empty:
                     "url": str(row.get('新闻链接', '')).strip(),
                     "publishTime": publish_time_str
                 }
-                # 确保内容不为空
-                if news_item['content'] and len(news_item['content']) > 20:
+                # 确保标题和链接不为空(与单数据源一致,不再按内容长度过滤)
+                if news_item['title'] and news_item['url']:
                     result.append(news_item)
                     filtered_count += 1
         except ValueError as e:
@@ -143,8 +143,9 @@ if not df.empty:
     # 调试输出
     print(f"[DEBUG] {symbol} 原始记录数: {original_count}, 24小时内记录数: {filtered_count}", file=sys.stderr)
 
-    # 只取最新的2-3条(按时间排序,最新的在前面)
-    result = result[:3]
+    # 按时间倒序,取最新5条(与单数据源一致)
+    result.sort(key=lambda x: x['publishTime'], reverse=True)
+    result = result[:5]
 
 print(json.dumps(result, ensure_ascii=False))
 `;
