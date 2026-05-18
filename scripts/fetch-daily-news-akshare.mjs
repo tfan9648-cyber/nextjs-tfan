@@ -62,6 +62,7 @@ async function loadCompanies(sql) {
   } catch (error) {
     console.error('❌ 从数据库读取公司列表失败:', error.message);
     throw error;
+  }
 }
 
 /**
