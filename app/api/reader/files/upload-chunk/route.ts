@@ -35,6 +35,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
+export const maxDuration = 60; // Allow up to 60s for large PDF text extraction
 
 const CHUNK_TMP_DIR = '/tmp/reader-chunks';
 const UPLOAD_DIR = '/tmp/reader-uploads';

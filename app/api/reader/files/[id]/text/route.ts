@@ -12,6 +12,7 @@ import { readFile } from 'fs/promises';
 import path from 'path';
 
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 const UPLOAD_DIR = '/tmp/reader-uploads';
 

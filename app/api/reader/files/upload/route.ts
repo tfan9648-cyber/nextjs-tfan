@@ -15,6 +15,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 const UPLOAD_DIR = '/tmp/reader-uploads';
 const MAX_SIZE = 50 * 1024 * 1024; // 50 MB
