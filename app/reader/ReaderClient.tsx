@@ -42,7 +42,21 @@ function setDeviceId(id: string) {
   localStorage.setItem('reader_device_id', id);
 }
 
-async function api(path: string, opts: RequestInit = {}) {
+/** 重新注册设备并获取新 token */
+async function refreshToken(): Promise<string> {
+  const res = await fetch(`${API_BASE}/auth/device`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform: 'web' }),
+  });
+  if (!res.ok) throw new Error('设备注册失败');
+  const data = await res.json();
+  setToken(data.token);
+  setDeviceId(String(data.deviceId));
+  return data.token;
+}
+
+async function api(path: string, opts: RequestInit = {}, _retried = false): Promise<Response> {
   const token = getToken();
   const headers: Record<string, string> = {};
   if (opts.headers) {
@@ -51,6 +65,13 @@ async function api(path: string, opts: RequestInit = {}) {
   }
   if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
+  // Auto-refresh token on 401 and retry once
+  if (res.status === 401 && !_retried) {
+    console.log('[reader] 401 detected, refreshing token...');
+    const newToken = await refreshToken();
+    headers['Authorization'] = `Bearer ${newToken}`;
+    return api(path, { ...opts, headers }, true);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
@@ -269,9 +290,54 @@ export default function ReaderClient() {
   }, [isPlaying, saveProgress]);
 
   // ===== Upload =====
-  // Vercel Hobby plan 限制单次请求 body 不超过 4.5MB（含 multipart overhead）
-  // TODO: 后续改用 R2 presigned URL 客户端直传以绕过此限制
-  const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+  const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
+  const CHUNK_UPLOAD_THRESHOLD = 3.5 * 1024 * 1024; // > 3.5MB 用分片上传
+  const UPLOAD_CHUNK_SIZE = 3 * 1024 * 1024; // 每片 3MB
+
+  /** 普通小文件直传 */
+  const uploadSmallFile = async (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await api('/files/upload', { method: 'POST', body: form });
+    return res.json();
+  };
+
+  /** 大文件分片上传 */
+  const uploadLargeFile = async (file: File) => {
+    const totalChunks = Math.ceil(file.size / UPLOAD_CHUNK_SIZE);
+    // 1. init
+    const initRes = await apiJson('/files/upload-chunk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'init',
+        filename: file.name,
+        totalSize: file.size,
+        totalChunks,
+        mimeType: file.type || 'application/octet-stream',
+      }),
+    });
+    const { uploadId } = initRes;
+    // 2. upload chunks
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * UPLOAD_CHUNK_SIZE;
+      const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size);
+      const blob = file.slice(start, end);
+      const chunkForm = new FormData();
+      chunkForm.append('action', 'chunk');
+      chunkForm.append('uploadId', uploadId);
+      chunkForm.append('chunkIndex', String(i));
+      chunkForm.append('file', blob);
+      await api('/files/upload-chunk', { method: 'POST', body: chunkForm });
+    }
+    // 3. complete
+    return apiJson('/files/upload-chunk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'complete', uploadId }),
+    });
+  };
+
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploading(true);
@@ -280,25 +346,13 @@ export default function ReaderClient() {
       for (const file of Array.from(files)) {
         if (file.size > MAX_UPLOAD_BYTES) {
           throw new Error(
-            `文件 "${file.name}" 大小 ${(file.size / 1024 / 1024).toFixed(1)}MB 超过 4MB 上限（Vercel 限制），请拆分或压缩后再传`
+            `文件 "${file.name}" 大小 ${(file.size / 1024 / 1024).toFixed(1)}MB 超过 50MB 上限`
           );
         }
-        const form = new FormData();
-        form.append('file', file);
-        const token = getToken();
-        const res = await fetch(`${API_BASE}/files/upload`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: form,
-        });
-        if (res.status === 413) {
-          throw new Error('文件过大被服务器拒绝（>4MB）');
-        }
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error((err as { error?: string }).error || `上传失败 (HTTP ${res.status})`);
-        }
-        const uploaded = await res.json();
+        // 根据文件大小选择上传方式
+        const uploaded = file.size > CHUNK_UPLOAD_THRESHOLD
+          ? await uploadLargeFile(file)
+          : await uploadSmallFile(file);
         // 加入播放列表
         await apiJson('/playlist', {
           method: 'POST',
@@ -682,7 +736,7 @@ export default function ReaderClient() {
           <div className="p-3 border-b border-gray-700 flex items-center justify-between">
             <h2 className="font-semibold text-sm text-gray-300">播放列表</h2>
             <label className="cursor-pointer bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-xs font-medium transition">
-              {uploading ? '上传中...' : '+ 上传(≤4MB)'}
+              {uploading ? '上传中...' : '+ 上传(≤50MB)'}
               <input
                 type="file"
                 className="hidden"
