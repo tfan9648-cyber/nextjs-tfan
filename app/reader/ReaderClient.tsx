@@ -682,7 +682,7 @@ export default function ReaderClient() {
 
   return (
     <div
-      className="min-h-screen bg-gray-900 text-gray-100 flex flex-col"
+      className="h-screen bg-gray-900 text-gray-100 flex flex-col overflow-hidden"
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -823,16 +823,63 @@ export default function ReaderClient() {
         </main>
       </div>
 
-      {/* Bottom Control Bar */}
-      <footer className="bg-gray-800 border-t border-gray-700 px-4 py-3">
+      {/* Bottom Control Bar - 始终可见 */}
+      <footer className="flex-shrink-0 bg-gray-800 border-t-2 border-blue-500/30 px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.3)]">
         <div className="flex items-center gap-4 max-w-5xl mx-auto">
           {/* Play/Pause */}
           <button
+            onClick={() => {
+              // Skip back: go to previous chunk
+              const newIdx = Math.max(0, currentChunkIdxRef.current - 1);
+              setCurrentChunkIdx(newIdx);
+              currentChunkIdxRef.current = newIdx;
+              let pos = 0;
+              for (let i = 0; i < newIdx; i++) pos += chunksRef.current[i]?.length || 0;
+              setCharPos(pos);
+              charPosRef.current = pos;
+              if (textRef.current) setPlayProgress((pos / textRef.current.length) * 100);
+              if (playingRef.current) {
+                window.speechSynthesis.cancel();
+                if (utteranceTimeoutRef.current) clearTimeout(utteranceTimeoutRef.current);
+                setTimeout(() => speakChunk(newIdx), 50);
+              }
+            }}
+            disabled={!currentFileId || !text}
+            className="w-9 h-9 rounded-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-700/50 disabled:cursor-not-allowed flex items-center justify-center transition text-xs"
+            title="上一段"
+          >
+            ⏪
+          </button>
+          <button
             onClick={isPlaying ? handlePause : handlePlay}
             disabled={!currentFileId || !text || !ttsAvailable}
-            className="w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center transition text-lg"
+            className="w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center transition text-2xl shadow-lg hover:scale-105 active:scale-95"
           >
             {isPlaying ? '⏸' : '▶️'}
+          </button>
+          <button
+            onClick={() => {
+              // Skip forward: go to next chunk
+              const maxIdx = chunksRef.current.length - 1;
+              const newIdx = Math.min(maxIdx, currentChunkIdxRef.current + 1);
+              setCurrentChunkIdx(newIdx);
+              currentChunkIdxRef.current = newIdx;
+              let pos = 0;
+              for (let i = 0; i < newIdx; i++) pos += chunksRef.current[i]?.length || 0;
+              setCharPos(pos);
+              charPosRef.current = pos;
+              if (textRef.current) setPlayProgress((pos / textRef.current.length) * 100);
+              if (playingRef.current) {
+                window.speechSynthesis.cancel();
+                if (utteranceTimeoutRef.current) clearTimeout(utteranceTimeoutRef.current);
+                setTimeout(() => speakChunk(newIdx), 50);
+              }
+            }}
+            disabled={!currentFileId || !text}
+            className="w-9 h-9 rounded-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-700/50 disabled:cursor-not-allowed flex items-center justify-center transition text-xs"
+            title="下一段"
+          >
+            ⏩
           </button>
 
           {/* Progress bar */}
