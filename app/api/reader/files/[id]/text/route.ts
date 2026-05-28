@@ -16,25 +16,32 @@ export const runtime = 'nodejs';
 const UPLOAD_DIR = '/tmp/reader-uploads';
 
 async function extractText(buf: Buffer, mime: string, filename: string): Promise<string> {
+  const lower = filename.toLowerCase();
   try {
-    if (mime === 'application/pdf' || filename.endsWith('.pdf')) {
-      const pdfParse = (await import('pdf-parse')).default;
-      const data = await pdfParse(buf);
-      return data.text || '';
+    if (mime === 'application/pdf' || lower.endsWith('.pdf')) {
+      // pdf-parse v2: new PDFParse({ data }).getText() — no default export anymore
+      const { PDFParse } = await import('pdf-parse');
+      const parser = new PDFParse({ data: buf });
+      try {
+        const result = await parser.getText();
+        return result.text || '';
+      } finally {
+        await parser.destroy().catch(() => {});
+      }
     }
     if (
       mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      filename.endsWith('.docx')
+      lower.endsWith('.docx')
     ) {
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ buffer: buf });
       return result.value || '';
     }
-    if (mime?.startsWith('text/') || filename.endsWith('.txt') || filename.endsWith('.md')) {
+    if (mime?.startsWith('text/') || lower.endsWith('.txt') || lower.endsWith('.md')) {
       return buf.toString('utf-8');
     }
   } catch (e: any) {
-    console.warn('[text-route] extraction failed:', e.message);
+    console.warn('[text-route] extraction failed:', e?.message || e, e?.stack);
   }
   return '';
 }
@@ -42,15 +49,21 @@ async function extractText(buf: Buffer, mime: string, filename: string): Promise
 async function tryReExtract(fileId: number, r2Key: string | null, mime: string, filename: string): Promise<string | null> {
   if (!r2Key) return null;
   try {
-    let buf: Buffer;
-    if (isR2Configured() && r2Key.startsWith('reader/')) {
-      buf = await getR2Object(r2Key);
-    } else {
+    let buf: Buffer | null = null;
+    // Prefer R2 if configured; supports both new (reader/...) and legacy keys stored there.
+    if (isR2Configured()) {
+      try {
+        buf = await getR2Object(r2Key);
+      } catch (e: any) {
+        console.warn('[text-route] R2 read failed, trying local:', e?.message);
+      }
+    }
+    if (!buf) {
+      // Local fallback (dev only — Vercel /tmp is ephemeral across requests)
       buf = await readFile(path.join(UPLOAD_DIR, r2Key));
     }
     const text = await extractText(buf, mime, filename);
     if (text.length > 0) {
-      // 更新数据库
       const sql = getReaderDb();
       await sql`
         UPDATE reader_files
@@ -60,7 +73,7 @@ async function tryReExtract(fileId: number, r2Key: string | null, mime: string, 
       return text;
     }
   } catch (e: any) {
-    console.warn('[text-route] re-extraction failed:', e.message);
+    console.warn('[text-route] re-extraction failed:', e?.message || e);
   }
   return null;
 }

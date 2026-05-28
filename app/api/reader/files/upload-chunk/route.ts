@@ -142,25 +142,32 @@ async function countReceivedChunks(uploadId: string): Promise<number> {
 }
 
 async function extractText(buf: Buffer, mime: string, filename: string): Promise<string> {
+  const lower = filename.toLowerCase();
   try {
-    if (mime === 'application/pdf' || filename.endsWith('.pdf')) {
-      const pdfParse = (await import('pdf-parse')).default;
-      const data = await pdfParse(buf);
-      return data.text || '';
+    if (mime === 'application/pdf' || lower.endsWith('.pdf')) {
+      // pdf-parse v2: new PDFParse({ data }).getText() — no default export anymore
+      const { PDFParse } = await import('pdf-parse');
+      const parser = new PDFParse({ data: buf });
+      try {
+        const result = await parser.getText();
+        return result.text || '';
+      } finally {
+        await parser.destroy().catch(() => {});
+      }
     }
     if (
       mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      filename.endsWith('.docx')
+      lower.endsWith('.docx')
     ) {
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ buffer: buf });
       return result.value || '';
     }
-    if (mime?.startsWith('text/') || filename.endsWith('.txt') || filename.endsWith('.md')) {
+    if (mime?.startsWith('text/') || lower.endsWith('.txt') || lower.endsWith('.md')) {
       return buf.toString('utf-8');
     }
   } catch (e: any) {
-    console.error('[chunk-upload] text extraction failed:', e.message);
+    console.error('[chunk-upload] text extraction failed:', e?.message || e, e?.stack);
   }
   return '';
 }
