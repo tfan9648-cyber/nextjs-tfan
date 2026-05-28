@@ -1,0 +1,13 @@
+import { neon } from '@neondatabase/serverless';
+import dotenv from 'dotenv';
+dotenv.config({ path: '/home/tfan/projects/nextjs-tfan/.env' });
+dotenv.config({ path: '/home/tfan/projects/nextjs-tfan/.env.local' });
+const sql = neon(process.env.DATABASE_URL);
+const gp = await sql`SELECT id, date, title, created_at FROM news WHERE category='global_politics' AND date='2026-05-14' ORDER BY created_at`;
+console.log('=== global_politics (2026-05-14) ===');
+console.log('总数:', gp.length);
+gp.forEach(r => console.log('  ', r.created_at, '|', (r.title||'').slice(0,60)));
+const cn = await sql`SELECT id, company, created_at FROM news WHERE category='company_news' AND date='2026-05-14' ORDER BY created_at`;
+console.log('\n=== company_news (2026-05-14) ===');
+console.log('总数:', cn.length);
+cn.forEach(r => console.log('  ', r.created_at, '|', r.company));

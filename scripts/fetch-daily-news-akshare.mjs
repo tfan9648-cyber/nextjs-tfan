@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
  * 上市公司每日要闻抓取脚本 (AKShare + yfinance 双数据源)
- * AKShare: A股11家公司 | yfinance: 腾讯控股+阿里巴巴(港股)
+ * AKShare: A股公司 | yfinance: 港股/美股公司
  * 自动生成"上市公司晨报" morning_briefing 入库
- * 更新时间: 2026-05-16
+ * 支持自动查找股票代码并缓存到数据库 company_code_map 表
+ * 更新时间: 2026-05-19
  */
 import { neon } from '@neondatabase/serverless';
 import { spawnSync } from 'child_process';
@@ -15,6 +16,9 @@ import { config as dotenvConfig } from 'dotenv';
 // 加载 .env.local
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenvConfig({ path: join(__dirname, '..', '.env.local') });
+
+// Python 路径: 使用 akshare_venv (同时含 akshare + yfinance)
+const PYTHON_PATH = join(__dirname, 'akshare_venv', 'bin', 'python3');
 
 // === 配置 ===
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://api.siliconflow.cn/v1';
@@ -34,13 +38,20 @@ const COMPANY_STOCK_MAP = {
   "福耀玻璃": "600660",
   "昱能科技": "688348",
   "凌霄泵业": "002884",
-  "长江电力": "600900"
+  "长江电力": "600900",
+  "国投电力": "600886",
+  "川投能源": "600674"
 };
 
 // === 港股/美股公司(用yfinance) ===
 const YFINANCE_COMPANY_MAP = {
   "腾讯控股": "0700.HK",
-  "阿里巴巴": "9988.HK"
+  "阿里巴巴": "9988.HK",
+  "中国海洋石油": "0883.HK",
+  "华润电力": "0836.HK",
+  "申洲国际": "2313.HK",
+  "金斯瑞生物科技": "1548.HK",
+  "美团-W": "3690.HK"
 };
 
 // 从数据库动态读取公司列表
@@ -62,6 +73,180 @@ async function loadCompanies(sql) {
   } catch (error) {
     console.error('❌ 从数据库读取公司列表失败:', error.message);
     throw error;
+  }
+}
+
+/**
+ * 初始化 company_code_map 表（存储动态查到的股票代码）
+ */
+async function initCodeMapTable(sql) {
+  await sql`CREATE TABLE IF NOT EXISTS company_code_map (
+    company TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'auto',
+    market TEXT NOT NULL DEFAULT 'A',
+    verified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`;
+}
+
+/**
+ * 从数据库加载已缓存的股票代码映射
+ */
+async function loadCachedCodeMap(sql) {
+  const rows = await sql`SELECT company, symbol, market FROM company_code_map`;
+  const map = { akshare: {}, yfinance: {} };
+  for (const row of rows) {
+    if (row.market === 'A') {
+      map.akshare[row.company] = row.symbol;
+    } else {
+      map.yfinance[row.company] = row.symbol;
+    }
+  }
+  return map;
+}
+
+/**
+ * 将查到的代码写入 company_code_map 缓存
+ */
+async function cacheCodeMapping(sql, company, symbol, market, source = 'auto') {
+  await sql`INSERT INTO company_code_map (company, symbol, source, market, updated_at)
+    VALUES (${company}, ${symbol}, ${source}, ${market}, NOW())
+    ON CONFLICT (company) DO UPDATE SET symbol = ${symbol}, source = ${source}, market = ${market}, updated_at = NOW()`;
+  console.log(`💾 ${company}: 代码 ${symbol} (${market}) 已缓存到 company_code_map`);
+}
+
+/**
+ * 解析公司名称，推断可能的港股/美股 ticker
+ * 规则：公司名含 "-W" "-S" "-B" 等后缀视为港股
+ */
+function guessHKTicker(company) {
+  // 常见港股后缀模式
+  if (company.includes('-W') || company.includes('-S') || company.includes('-B')) {
+    return true; // 可能是港股
+  }
+  return false;
+}
+
+/**
+ * 用 yfinance 验证一个 ticker 是否有效
+ */
+async function verifyYfinanceTicker(ticker) {
+  try {
+    const pythonScript = `
+import sys
+import yfinance as yf
+ticker = sys.argv[1]
+t = yf.Ticker(ticker)
+info = t.info
+if info and info.get('regularMarketPrice'):
+    print('OK')
+else:
+    print('FAIL')
+`;
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, ticker], {
+      encoding: 'utf-8',
+      timeout: 15000
+    });
+    return (proc.stdout || '').trim() === 'OK';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 智能解析公司到代码的完整流程：
+ * 1. 先查硬编码映射
+ * 2. 再查 DB 缓存 company_code_map
+ * 3. 尝试 AKShare 自动查 A 股
+ * 4. 尝试 yfinance 查港股/美股
+ * 5. 都失败则记日志
+ */
+async function resolveCompanyCode(sql, company, cachedMap) {
+  // 1. 硬编码映射
+  if (COMPANY_STOCK_MAP[company]) {
+    return { symbol: COMPANY_STOCK_MAP[company], source: 'akshare' };
+  }
+  if (YFINANCE_COMPANY_MAP[company]) {
+    return { symbol: YFINANCE_COMPANY_MAP[company], source: 'yfinance' };
+  }
+
+  // 2. DB 缓存
+  if (cachedMap.akshare[company]) {
+    return { symbol: cachedMap.akshare[company], source: 'akshare' };
+  }
+  if (cachedMap.yfinance[company]) {
+    return { symbol: cachedMap.yfinance[company], source: 'yfinance' };
+  }
+
+  // 3. 尝试 AKShare 自动查 A 股代码
+  console.log(`🔍 ${company}: 尝试自动查找A股代码...`);
+  const akCode = await lookupStockSymbol(company);
+  if (akCode) {
+    console.log(`✅ ${company}: A股代码 ${akCode}，缓存到数据库`);
+    await cacheCodeMapping(sql, company, akCode, 'A', 'auto-akshare');
+    return { symbol: akCode, source: 'akshare' };
+  }
+
+  // 4. 尝试 yfinance 查港股
+  //    策略: 如果公司名有 -W/-S/-B 后缀，或者 A 股查不到，尝试用 yfinance 搜索
+  console.log(`🔍 ${company}: A股未找到，尝试 yfinance 查港股/美股...`);
+  const yfinanceCode = await lookupYfinanceTicker(company);
+  if (yfinanceCode) {
+    console.log(`✅ ${company}: yfinance ticker ${yfinanceCode}，缓存到数据库`);
+    await cacheCodeMapping(sql, company, yfinanceCode, 'HK', 'auto-yfinance');
+    return { symbol: yfinanceCode, source: 'yfinance' };
+  }
+
+  // 5. 全部失败
+  console.warn(`⚠️  ${company}: 无法自动匹配股票代码！需手动配置。`);
+  return null;
+}
+
+/**
+ * 用 yfinance 搜索公司的港股/美股 ticker
+ */
+async function lookupYfinanceTicker(company) {
+  try {
+    const pythonScript = `
+import sys
+import json
+import yfinance as yf
+
+company = sys.argv[1]
+# 去掉常见后缀
+clean = company.replace('-W', '').replace('-S', '').replace('-B', '')
+
+# 尝试用 yfinance 搜索
+try:
+    results = yf.search(clean, max_results=5)
+    quotes = results.get('quotes', []) if isinstance(results, dict) else []
+    for q in quotes:
+        symbol = q.get('symbol', '')
+        # 优先港股
+        if '.HK' in symbol:
+            print(symbol)
+            break
+    else:
+        # 没有港股则看有无美股
+        for q in quotes:
+            symbol = q.get('symbol', '')
+            exchange = q.get('exchange', '')
+            if exchange in ['NYQ', 'NMS', 'NGM']:
+                print(symbol)
+                break
+except Exception as e:
+    print('', file=sys.stderr)
+`;
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, company], {
+      encoding: 'utf-8',
+      timeout: 20000
+    });
+    const output = (proc.stdout || '').trim();
+    return output || null;
+  } catch {
+    return null;
   }
 }
 
@@ -159,7 +344,7 @@ print(json.dumps(result, ensure_ascii=False))
     delete cleanEnv.ALL_PROXY;
     delete cleanEnv.all_proxy;
 
-    const process = spawnSync('python3', ['-c', pythonScript, symbol, cutoffBeijingTime], {
+    const process = spawnSync(PYTHON_PATH, ['-c', pythonScript, symbol, cutoffBeijingTime], {
       encoding: 'utf-8',
       timeout: 30000,
       env: cleanEnv
@@ -239,7 +424,7 @@ else:
     delete cleanEnv.ALL_PROXY;
     delete cleanEnv.all_proxy;
     
-    const proc = spawnSync('python3', ['-c', pythonScript, company], {
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, company], {
       encoding: 'utf-8',
       timeout: 15000,
       env: cleanEnv
@@ -301,7 +486,7 @@ print(json.dumps(result, ensure_ascii=False))
 `;
 
     // yfinance 需要走代理访问 Yahoo(与 AKShare 相反)
-    const proc = spawnSync('python3', ['-c', pythonScript, ticker], {
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, ticker], {
       encoding: 'utf-8',
       timeout: 30000
     });
@@ -520,9 +705,27 @@ async function main() {
   // 初始化数据库连接
   const sql = neon(DATABASE_URL);
   
+  // 初始化 company_code_map 表
+  await initCodeMapTable(sql);
+  
+  // 加载 DB 缓存的代码映射
+  const cachedMap = await loadCachedCodeMap(sql);
+  const cachedCount = Object.keys(cachedMap.akshare).length + Object.keys(cachedMap.yfinance).length;
+  if (cachedCount > 0) {
+    console.log(`💾 从 DB 加载了 ${cachedCount} 条缓存代码映射`);
+  }
+  
   // 从数据库加载公司列表
   const companies = await loadCompanies(sql);
   console.log(`🔍 处理 ${companies.length} 家公司\n`);
+
+  // === 覆盖率统计 ===
+  const hardcoded = Object.keys(COMPANY_STOCK_MAP).length + Object.keys(YFINANCE_COMPANY_MAP).length;
+  const unmapped = companies.filter(c => !COMPANY_STOCK_MAP[c] && !YFINANCE_COMPANY_MAP[c] && !cachedMap.akshare[c] && !cachedMap.yfinance[c]);
+  console.log(`📊 覆盖率: 硬编码 ${hardcoded} 家, DB缓存 ${cachedCount} 家, 待查 ${unmapped.length} 家`);
+  if (unmapped.length > 0) {
+    console.log(`   待查公司: ${unmapped.join(', ')}`);
+  }
 
   let successCount = 0;
   let skipCount = 0;
@@ -532,32 +735,24 @@ async function main() {
   const today = new Date().toISOString().split('T')[0];
 
   // 串行处理,避免 API 限速
+  const unmappedCompanies = []; // 记录无法匹配代码的公司
   for (const company of companies) {
     console.log(`\n📰 处理: ${company}`);
 
     let newsItems = null;
-    const akshareSymbol = COMPANY_STOCK_MAP[company];
-    const yfinanceTicker = YFINANCE_COMPANY_MAP[company];
+    const resolved = await resolveCompanyCode(sql, company, cachedMap);
 
-    if (akshareSymbol) {
-      // A股: 用 AKShare
-      newsItems = await fetchStockNewsWithPython(company, akshareSymbol);
-    } else if (yfinanceTicker) {
-      // 港股/美股: 用 yfinance
-      console.log(`🌐 ${company}: 使用 yfinance (${yfinanceTicker})`);
-      newsItems = await fetchNewsWithYfinance(company, yfinanceTicker);
-    } else {
-      // 新公司: 尝试自动查找股票代码
-      console.log(`🔍 ${company}: 尝试自动查找股票代码...`);
-      const foundSymbol = await lookupStockSymbol(company);
-      if (foundSymbol) {
-        console.log(`✅ ${company}: 找到股票代码 ${foundSymbol}`);
-        newsItems = await fetchStockNewsWithPython(company, foundSymbol);
-      } else {
-        console.log(`⏭️ ${company}: 无法找到股票代码,跳过`);
-        skipCount++;
-        continue;
-      }
+    if (!resolved) {
+      unmappedCompanies.push(company);
+      skipCount++;
+      continue;
+    }
+
+    if (resolved.source === 'akshare') {
+      newsItems = await fetchStockNewsWithPython(company, resolved.symbol);
+    } else if (resolved.source === 'yfinance') {
+      console.log(`🌐 ${company}: 使用 yfinance (${resolved.symbol})`);
+      newsItems = await fetchNewsWithYfinance(company, resolved.symbol);
     }
 
     if (!newsItems) {
@@ -621,6 +816,11 @@ async function main() {
   console.log(`📊 统计: 成功 ${successCount}, 跳过 ${skipCount}, 失败 ${failCount}, 总计 ${companies.length}`);
   console.log(`⏰ 完成时间: ${new Date().toLocaleString('zh-CN')}`);
 
+  // 报告无法匹配的公司
+  if (unmappedCompanies.length > 0) {
+    console.log(`\n⚠️  以下 ${unmappedCompanies.length} 家公司无法自动匹配股票代码，需手动配置:`);
+    unmappedCompanies.forEach(c => console.log(`   - ${c}`));
+  }
   if (successCount === 0 && skipCount > 0) {
     console.log('📝 注意: 今日所有公司24小时内均无新闻,跳过入库');
   } else if (successCount === 0) {
