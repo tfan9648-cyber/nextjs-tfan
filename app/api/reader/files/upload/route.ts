@@ -22,14 +22,17 @@ const MAX_SIZE = 50 * 1024 * 1024; // 50 MB
 async function extractText(buf: Buffer, mime: string, filename: string): Promise<string> {
   try {
     if (mime === 'application/pdf' || filename.endsWith('.pdf')) {
+      console.log(`[upload] extracting PDF text from "${filename}" (${buf.length} bytes)`);
       const pdfParse = (await import('pdf-parse')).default;
       const data = await pdfParse(buf);
+      console.log(`[upload] PDF extracted: ${data.text?.length || 0} chars`);
       return data.text || '';
     }
     if (
       mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
       filename.endsWith('.docx')
     ) {
+      console.log(`[upload] extracting DOCX text from "${filename}"`);
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ buffer: buf });
       return result.value || '';
@@ -37,8 +40,9 @@ async function extractText(buf: Buffer, mime: string, filename: string): Promise
     if (mime?.startsWith('text/') || filename.endsWith('.txt') || filename.endsWith('.md')) {
       return buf.toString('utf-8');
     }
+    console.log(`[upload] unsupported mime for extraction: ${mime}, file: ${filename}`);
   } catch (e: any) {
-    console.warn('text extraction failed:', e.message);
+    console.error(`[upload] text extraction failed for "${filename}":`, e.message, e.stack?.slice(0, 300));
   }
   return '';
 }

@@ -269,12 +269,20 @@ export default function ReaderClient() {
   }, [isPlaying, saveProgress]);
 
   // ===== Upload =====
+  // Vercel Hobby plan 限制单次请求 body 不超过 4.5MB（含 multipart overhead）
+  // TODO: 后续改用 R2 presigned URL 客户端直传以绕过此限制
+  const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploading(true);
     setError('');
     try {
       for (const file of Array.from(files)) {
+        if (file.size > MAX_UPLOAD_BYTES) {
+          throw new Error(
+            `文件 "${file.name}" 大小 ${(file.size / 1024 / 1024).toFixed(1)}MB 超过 4MB 上限（Vercel 限制），请拆分或压缩后再传`
+          );
+        }
         const form = new FormData();
         form.append('file', file);
         const token = getToken();
@@ -283,9 +291,12 @@ export default function ReaderClient() {
           headers: { Authorization: `Bearer ${token}` },
           body: form,
         });
+        if (res.status === 413) {
+          throw new Error('文件过大被服务器拒绝（>4MB）');
+        }
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          throw new Error((err as { error?: string }).error || 'upload failed');
+          throw new Error((err as { error?: string }).error || `上传失败 (HTTP ${res.status})`);
         }
         const uploaded = await res.json();
         // 加入播放列表
@@ -671,7 +682,7 @@ export default function ReaderClient() {
           <div className="p-3 border-b border-gray-700 flex items-center justify-between">
             <h2 className="font-semibold text-sm text-gray-300">播放列表</h2>
             <label className="cursor-pointer bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-xs font-medium transition">
-              {uploading ? '上传中...' : '+ 上传'}
+              {uploading ? '上传中...' : '+ 上传(≤4MB)'}
               <input
                 type="file"
                 className="hidden"
