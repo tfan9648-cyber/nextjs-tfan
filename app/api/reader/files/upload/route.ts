@@ -23,16 +23,10 @@ async function extractText(buf: Buffer, mime: string, filename: string): Promise
   try {
     if (mime === 'application/pdf' || filename.toLowerCase().endsWith('.pdf')) {
       console.log(`[upload] extracting PDF text from "${filename}" (${buf.length} bytes)`);
-      // pdf-parse v2: new PDFParse({ data }).getText() — no default export anymore
-      const { PDFParse } = await import('pdf-parse');
-      const parser = new PDFParse({ data: buf });
-      try {
-        const result = await parser.getText();
-        console.log(`[upload] PDF extracted: ${result.text?.length || 0} chars`);
-        return result.text || '';
-      } finally {
-        await parser.destroy().catch(() => {});
-      }
+      const { extractPdfText } = await import('@/lib/pdf-extract');
+      const text = await extractPdfText(buf);
+      console.log(`[upload] PDF extracted: ${text.length} chars`);
+      return text;
     }
     if (
       mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||

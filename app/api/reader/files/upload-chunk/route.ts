@@ -145,15 +145,8 @@ async function extractText(buf: Buffer, mime: string, filename: string): Promise
   const lower = filename.toLowerCase();
   try {
     if (mime === 'application/pdf' || lower.endsWith('.pdf')) {
-      // pdf-parse v2: new PDFParse({ data }).getText() — no default export anymore
-      const { PDFParse } = await import('pdf-parse');
-      const parser = new PDFParse({ data: buf });
-      try {
-        const result = await parser.getText();
-        return result.text || '';
-      } finally {
-        await parser.destroy().catch(() => {});
-      }
+      const { extractPdfText } = await import('@/lib/pdf-extract');
+      return await extractPdfText(buf);
     }
     if (
       mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
