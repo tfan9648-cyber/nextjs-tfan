@@ -2,6 +2,10 @@
  * POST /api/reader/tts/synthesize
  *   body: { text, voice?, rate? }
  *   返回 audio/mpeg 流
+ *
+ * ⚠️ V1 备用接口 — 当前 Web 端使用浏览器 Web Speech API 进行 TTS，
+ * 不再调用此后端接口。保留代码供 V2 服务端 TTS 方案使用。
+ * 问题：Vercel Serverless 函数超时（msedge-tts 流式合成耗时过长）
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { authReader, rateLimit } from '@/lib/reader-auth';
