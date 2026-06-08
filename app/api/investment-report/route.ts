@@ -55,15 +55,12 @@ export async function POST(request: NextRequest) {
     const today = new Date().toISOString().split('T')[0];
     const timestamp = Date.now();
 
-    // 使用 Tavily 搜索投资相关信息（advanced 深度搜索，限制10条避免prompt过长）
-    const searchResults = await searchInvestment(validKeywords, 10);
+    // 使用 Tavily 搜索投资相关信息（advanced 深度搜索）
+    const searchResults = await searchInvestment(validKeywords);
     console.log(`📊 Tavily investment search: ${searchResults.length} results`);
 
-    // 构建搜索上下文（截断防止超长）
-    let searchContext = formatSearchContext(searchResults);
-    if (searchContext.length > 6000) {
-      searchContext = searchContext.slice(0, 6000) + '\n\n（搜索结果已截断）';
-    }
+    // 构建搜索上下文
+    const searchContext = formatSearchContext(searchResults);
 
     // 生成投资报告
     const prompt = `你是一位资深投资分析师。请根据以下关键词和参考信息，撰写一份详细的、有深度的投资研究报告。
