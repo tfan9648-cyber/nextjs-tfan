@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb, initDb } from '@/lib/db';
 import { searchInvestment, formatSearchContext } from '@/lib/tavily';
 
+// Vercel Serverless 函数超时设置（秒）
+// DeepSeek 生成长报告需要 30-60 秒，默认 10 秒会被截断
+export const maxDuration = 120;
+
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://api.siliconflow.cn/v1';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-ai/DeepSeek-V3.2';
@@ -51,12 +55,15 @@ export async function POST(request: NextRequest) {
     const today = new Date().toISOString().split('T')[0];
     const timestamp = Date.now();
 
-    // 使用 Tavily 搜索投资相关信息（advanced 深度搜索）
-    const searchResults = await searchInvestment(validKeywords);
+    // 使用 Tavily 搜索投资相关信息（advanced 深度搜索，限制10条避免prompt过长）
+    const searchResults = await searchInvestment(validKeywords, 10);
     console.log(`📊 Tavily investment search: ${searchResults.length} results`);
 
-    // 构建搜索上下文
-    const searchContext = formatSearchContext(searchResults);
+    // 构建搜索上下文（截断防止超长）
+    let searchContext = formatSearchContext(searchResults);
+    if (searchContext.length > 6000) {
+      searchContext = searchContext.slice(0, 6000) + '\n\n（搜索结果已截断）';
+    }
 
     // 生成投资报告
     const prompt = `你是一位资深投资分析师。请根据以下关键词和参考信息，撰写一份详细的、有深度的投资研究报告。
