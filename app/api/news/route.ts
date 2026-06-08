@@ -90,6 +90,13 @@ export async function GET(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
+    // 密钥校验：删除要闻需要密钥
+    const apiKey = request.headers.get('x-api-key');
+    const secretKey = process.env.API_SECRET_KEY;
+    if (!secretKey || apiKey !== secretKey) {
+      return NextResponse.json({ error: '未授权访问' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });

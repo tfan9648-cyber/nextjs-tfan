@@ -1,80 +1,42 @@
 #!/usr/bin/env node
 /**
- * 统一抓取脚本：时政财经 + 公司新闻（V3方案完整实施）
- * 核心逻辑：
- * 1. 时政国际财经：已停用 Tavily，仅支持AKShare抓取公司新闻
- * 2. 遍历公司新闻：AKShare → 24小时过滤 → DeepSeek生成JSON → 写入数据库
- * 3. 标题质量：严禁"重要动态/业务动态/最新进展/公司公告"等废词
+ * 上市公司每日要闻抓取脚本 (AKShare + yfinance 双数据源)
+ * 
+ * 数据源: AKShare (A股/港股) + yfinance (港股/美股)
+ * 公司来源: 从数据库 config 表读取 supported_companies（与网页左边栏同步）
+ * 摘要格式: "事件-影响-后续" 三段式，300字内
+ * 晨报: 仅包含有新闻的公司
+ * 
+ * 符合 net-summary.md 任务要求
+ * 创建时间: 2026-06-08
  */
-
 import { neon } from '@neondatabase/serverless';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { readFileSync } from 'fs';
+import { config as dotenvConfig } from 'dotenv';
 
-// === 数据库重试包装 ===
-// 用于应对 Neon 偶发抽风（控制面 500 / 网络抖动）
-async function withRetry(fn, label = 'DB operation', maxRetries = 3) {
-  const delays = [2000, 5000, 10000];
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      const msg = String(err && (err.message || err));
-      const isRetryable = /\b(500|502|503|504)\b|control plane|connection reset|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang up|network/i.test(msg);
-      if (!isRetryable || attempt >= maxRetries) throw err;
-      const delay = delays[attempt] || 10000;
-      console.log(`[RETRY] ${label} 失败: ${msg.slice(0,100)}，第 ${attempt+1} 次重试（共${maxRetries}次），等待 ${delay/1000}s...`);
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-}
-
-// === 从.env加载环境变量 ===
+// 加载 .env.local
 const __dirname = dirname(fileURLToPath(import.meta.url));
-try {
-  const envContent = readFileSync(join(__dirname, '..', '.env'), 'utf-8');
-  envContent.split('\n').forEach(line => {
-    const [key, ...vals] = line.split('=');
-    if (key && !key.startsWith('#')) {
-      process.env[key.trim()] = vals.join('=').trim();
-    }
-  });
-} catch(e) {
-  console.error('⚠️ 加载.env失败:', e.message);
-}
+dotenvConfig({ path: join(__dirname, '..', '.env.local') });
+
+// Python 路径: 使用 akshare_venv (同时含 akshare + yfinance)
+const PYTHON_PATH = join(__dirname, 'akshare_venv', 'bin', 'python3');
 
 // === 配置 ===
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://api.siliconflow.cn/v1';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-ai/DeepSeek-V3.2';
-// const TAVILY_API_KEY = process.env.TAVILY_API_KEY || ''; // 已停用 Tavily
 const DATABASE_URL = process.env.DATABASE_URL || '';
 
-// === 财经域名白名单 ===
-const FINANCE_DOMAINS = [
-  'eastmoney.com',
-  '10jqka.com.cn',
-  'sse.com.cn',
-  'szse.cn',
-  'cninfo.com.cn',
-  'sina.com.cn',
-  'finance.sina.com.cn',
-  'ifeng.com',
-  'finance.ifeng.com',
-  'jrj.com.cn',
-  'cs.com.cn',
-  'stcn.com',
-  'cnstock.com',
-  '21jingji.com',
-  'caixin.com',
-  'yicai.com',
-];
+// ============================================================
+// 股票代码映射（硬编码 + 自动查找）
+// 说明: 优先使用硬编码映射，未命中时自动通过 AKShare/yfinance 查找
+// ============================================================
 
-// === 公司-股票代码映射 ===
-const COMPANY_STOCK_MAP = {
-  "中国平安": "000001",
+// A股公司 → AKShare 代码（6位纯数字）
+const A_STOCK_MAP = {
+  "中国平安": "601318",
   "美的集团": "000333",
   "伊利股份": "600887",
   "招商银行": "600036",
@@ -85,205 +47,365 @@ const COMPANY_STOCK_MAP = {
   "昱能科技": "688348",
   "凌霄泵业": "002884",
   "长江电力": "600900",
-  "腾讯控股": null, // 港股
-  "阿里巴巴": null  // 港/美股
+  "国投电力": "600886",
+  "川投能源": "600674",
+  "平安银行": "000001",
 };
 
-// === 获取当前日期（按北京时区取 today，全部用 24h 滑窗）===
-const now = new Date();
-// 北京时区当前时刻
-const nowChina = new Date(now.getTime() + 8 * 60 * 60 * 1000);
-const today = nowChina.toISOString().split('T')[0];
-// 严格 24h 截止：当前时间 - 24h（UTC 与 Beijing 都一致）
-const CUTOFF_MS = now.getTime() - (24 * 60 * 60 * 1000);
-const cutoffISO = new Date(CUTOFF_MS).toISOString();
+// 港股/美股公司 → yfinance ticker
+const HK_US_STOCK_MAP = {
+  "腾讯控股": "0700.HK",
+  "阿里巴巴": "9988.HK",
+  "中国海洋石油": "0883.HK",
+  "华润电力": "0836.HK",
+  "申洲国际": "2313.HK",
+  "金斯瑞生物科技": "1548.HK",
+  "美团-W": "3690.HK",
+  "安踏体育": "2020.HK",
+  "中国移动": "0941.HK",
+  "哔哩哔哩": "BILI",
+  "Teladoc Health": "TDOC",
+};
+
+// ============================================================
+// 公司列表获取（从数据库 config 表，与网页左边栏同步）
+// ============================================================
 
 /**
- * Step 0: 测试数据库连接
+ * 从数据库 config 表读取公司列表
+ * 这与网站左边栏"上市公司"列表数据源完全一致
  */
-async function testDatabaseConnection() {
+async function loadCompaniesFromDB(sql) {
   try {
-    const sql = neon(DATABASE_URL);
-    const result = await withRetry(() => sql`SELECT 1 as test`, 'testDatabaseConnection');
-    console.log('✅ 数据库连接成功');
-    return true;
-  } catch (error) {
-    console.error('❌ 数据库连接失败:', error.message);
-    return false;
-  }
-}
-
-/**
- * Step 1: 从data/config.json加载公司列表
- */
-function loadCompanies() {
-  try {
-    const configPath = join(__dirname, '..', 'data', 'config.json');
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (config.supportedCompanies && config.supportedCompanies.length > 0) {
-      console.log(`📋 从config.json加载${config.supportedCompanies.length}家公司`);
-      return config.supportedCompanies;
+    const rows = await sql`SELECT value FROM config WHERE key = 'supported_companies'`;
+    if (rows.length > 0 && Array.isArray(rows[0].value) && rows[0].value.length > 0) {
+      console.log(`📋 从数据库加载公司列表（与网页左边栏同步）: ${rows[0].value.length} 家`);
+      return rows[0].value;
     }
+    throw new Error('数据库无 supported_companies 配置');
   } catch (error) {
-    console.log('⚠️ 无法读取config.json，使用默认公司列表');
+    console.error('❌ 读取公司列表失败:', error.message);
+    throw error;
   }
-  
-  // 默认返回映射表中的公司
-  const defaultCompanies = Object.keys(COMPANY_STOCK_MAP);
-  console.log(`📋 使用默认${defaultCompanies.length}家公司`);
-  
-  return defaultCompanies;
+}
+
+// ============================================================
+// 股票代码自动补全
+// ============================================================
+
+/**
+ * 解析公司对应的股票代码和数据源
+ * 1. 优先查硬编码映射
+ * 2. 尝试 AKShare 查 A 股
+ * 3. 尝试 yfinance 查港股/美股
+ */
+async function resolveCompanyCode(company) {
+  // 1. 硬编码映射
+  if (A_STOCK_MAP[company]) {
+    return { symbol: A_STOCK_MAP[company], source: 'akshare' };
+  }
+  if (HK_US_STOCK_MAP[company]) {
+    return { symbol: HK_US_STOCK_MAP[company], source: 'yfinance' };
+  }
+
+  // 2. 尝试 AKShare 自动查 A 股
+  console.log(`🔍 ${company}: 尝试自动查找A股代码...`);
+  const akCode = await lookupAStockCode(company);
+  if (akCode) {
+    console.log(`✅ ${company}: 自动找到 A 股代码 ${akCode}`);
+    return { symbol: akCode, source: 'akshare' };
+  }
+
+  // 3. 尝试 yfinance 查港股/美股
+  console.log(`🔍 ${company}: 尝试 yfinance 查港股/美股...`);
+  const yfCode = await lookupYfinanceTicker(company);
+  if (yfCode) {
+    console.log(`✅ ${company}: 自动找到 yfinance ticker ${yfCode}`);
+    return { symbol: yfCode, source: 'yfinance' };
+  }
+
+  console.warn(`⚠️  ${company}: 无法自动匹配股票代码`);
+  return null;
 }
 
 /**
- * Step A: 时政国际财经 - Tavily搜索（已停用）
+ * 用 AKShare 查 A 股代码
  */
-async function searchGlobalFinance() {
-  console.log('\n🌍 Step A: 时政国际财经搜索（已停用 Tavily）');
-  console.log('='.repeat(40));
-  
-  console.log('⚠️ 时政财经搜索已停用（全面停用 Tavily），返回空结果');
-  return [];
-}
-
-/**
- * Step B-1: AKShare抓取A股公司新闻
- */
-async function fetchNewsWithAKShare(company, symbol) {
-  if (!symbol) return null;
-  
-  console.log(`   AKShare抓取: ${company} (${symbol})`);
-  
+async function lookupAStockCode(company) {
   try {
-    const pythonPath = join(__dirname, 'fetch_akshare_news.py');
-    
-    const result = spawnSync('python3', [
-      pythonPath,
-      symbol
-    ], {
-      encoding: 'utf-8',
-      timeout: 30000
+    const pythonScript = `
+import sys
+import akshare as ak
+
+company_name = sys.argv[1]
+df = ak.stock_info_a_code_name()
+matches = df[df['name'].str.contains(company_name)]
+if len(matches) > 0:
+    print(matches.iloc[0]['code'])
+else:
+    short_name = company_name.replace('集团', '').replace('股份', '').replace('控股', '').replace('-W', '').replace('-S', '')
+    matches = df[df['name'].str.contains(short_name)]
+    if len(matches) > 0:
+        print(matches.iloc[0]['code'])
+    else:
+        print('')
+`;
+    const cleanEnv = getCleanEnv();
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, company], {
+      encoding: 'utf-8', timeout: 15000, env: cleanEnv
     });
-
-    if (result.error) {
-      throw new Error(`Python执行失败: ${result.error.message}`);
-    }
-
-    if (result.status !== 0) {
-      const stderr = result.stderr?.trim() || '未知错误';
-      console.error(`   AKShare错误: ${stderr}`);
-      return null;
-    }
-
-    const stdout = result.stdout?.trim();
-    if (!stdout) {
-      console.log(`   AKShare无返回数据`);
-      return null;
-    }
-
-    let akshareData;
-    try {
-      akshareData = JSON.parse(stdout);
-    } catch (parseError) {
-      console.error(`   JSON解析失败: ${parseError.message}`);
-      return null;
-    }
-
-    if (!Array.isArray(akshareData) || akshareData.length === 0) {
-      console.log(`   AKShare返回空数组`);
-      return null;
-    }
-
-    // 转换为统一格式
-    const newsItems = akshareData.map(item => ({
-      title: item.title || '',
-      url: item.url || '',
-      content: item.content || '',
-      source: item.source || '东方财富',
-      publishTime: item.publishTime ? new Date(item.publishTime) : null,
-      fromAKShare: true
-    }));
-
-    console.log(`   ✅ AKShare获取${newsItems.length}条新闻`);
-    return newsItems;
-  } catch (error) {
-    console.error(`   ❌ AKShare失败: ${error.message}`);
+    return (proc.stdout || '').trim() || null;
+  } catch {
     return null;
   }
 }
 
 /**
- * Step B-2: Tavily搜索公司新闻（已停用）
+ * 用 yfinance 搜索港股/美股 ticker
  */
-async function searchNewsWithTavily(company) {
-  console.log(`   Tavily搜索（已停用）: "${company}"`);
-  console.log('   ⚠️ Tavily 已停用，返回空结果');
-  return [];
+async function lookupYfinanceTicker(company) {
+  try {
+    const pythonScript = `
+import sys
+import yfinance as yf
+
+company = sys.argv[1]
+clean = company.replace('-W', '').replace('-S', '').replace('-B', '')
+
+try:
+    results = yf.search(clean, max_results=5)
+    quotes = results.get('quotes', []) if isinstance(results, dict) else []
+    # 优先港股
+    for q in quotes:
+        symbol = q.get('symbol', '')
+        if '.HK' in symbol:
+            print(symbol)
+            break
+    else:
+        # 没有港股则看美股
+        for q in quotes:
+            symbol = q.get('symbol', '')
+            exchange = q.get('exchange', '')
+            if exchange in ['NYQ', 'NMS', 'NGM']:
+                print(symbol)
+                break
+except Exception:
+    pass
+`;
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, company], {
+      encoding: 'utf-8', timeout: 20000
+    });
+    return (proc.stdout || '').trim() || null;
+  } catch {
+    return null;
+  }
 }
 
-/**
- * 公司名别称映射（用于相关性过滤）
- */
-function getCompanyAliases(company) {
-  const aliasMap = {
-    '中国平安': ['中国平安', '平安银行', '平安保险', '平安集团', 'Ping An', '平安'],
-    '美的集团': ['美的集团', '美的', 'Midea', '美的小天鹅'],
-    '伊利股份': ['伊利股份', '伊利', 'Yili', '内蒙古伊利'],
-    '招商银行': ['招商银行', '招行', 'CMB', '招商局银行'],
-    '贵州茅台': ['贵州茅台', '茅台', 'Moutai', 'Kweichow', '茅五泸'],
-    '泸州老窖': ['泸州老窖', '老窖', 'Luzhou', '国窖1573', '泸州'],
-    '腾讯控股': ['腾讯控股', '腾讯', 'Tencent', '腾讯公司', '腾讯 QQ', '微信', 'WeChat'],
-    '阿里巴巴': ['阿里巴巴', '阿里', 'Alibaba', 'BABA', '阿里巴巴集团', '阿里云', '淘宝', '天猫'],
-    '万华化学': ['万华化学', '万华', 'Wanhua', '万华实业'],
-    '福耀玻璃': ['福耀玻璃', '福耀', 'Fuyao', '福曜'],
-    '昱能科技': ['昱能科技', '昱能', 'APsystems', 'AP系统'],
-    '凌霄泵业': ['凌霄泵业', '凌霄', '凌霄电气'],
-    '长江电力': ['长江电力', '长电', 'Yangtze Power', '长江'],
-  };
-  return aliasMap[company] || [company];
-}
+// ============================================================
+// 新闻抓取: AKShare (A股/港股)
+// ============================================================
 
 /**
- * Step C: DeepSeek总结新闻内容
+ * 用 AKShare 抓取 A 股新闻，过滤24小时内
  */
-async function summarizeWithDeepSeek(company, newsItems, isGlobal = false) {
+async function fetchNewsAKShare(company, symbol, cutoffBeijingTime) {
+  try {
+    console.log(`📡 ${company} [AKShare]: 抓取 A 股代码 ${symbol}...`);
+
+    const pythonScript = `
+import sys
+import json
+import datetime
+import akshare as ak
+
+symbol = sys.argv[1]
+cutoff_str = sys.argv[2]
+cutoff_dt = datetime.datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S")
+
+df = ak.stock_news_em(symbol=symbol)
+
+result = []
+if not df.empty:
+    original_count = 0
+    filtered_count = 0
+
+    for _, row in df.iterrows():
+        original_count += 1
+        publish_time_str = str(row.get('发布时间', ''))
+        if not publish_time_str or len(publish_time_str) < 10:
+            continue
+        try:
+            publish_dt = datetime.datetime.strptime(publish_time_str, "%Y-%m-%d %H:%M:%S")
+            if publish_dt >= cutoff_dt:
+                news_item = {
+                    "title": str(row.get('新闻标题', '')).strip(),
+                    "content": str(row.get('新闻内容', '')).replace('\\ue628', '').strip(),
+                    "source": str(row.get('文章来源', '')).strip(),
+                    "url": str(row.get('新闻链接', '')).strip(),
+                    "publishTime": publish_time_str
+                }
+                if news_item['title'] and news_item['url']:
+                    result.append(news_item)
+                    filtered_count += 1
+        except ValueError:
+            continue
+
+    print(f"[DEBUG] {symbol} 原始: {original_count}, 24h内: {filtered_count}", file=sys.stderr)
+    result.sort(key=lambda x: x['publishTime'], reverse=True)
+    result = result[:5]
+
+print(json.dumps(result, ensure_ascii=False))
+`;
+
+    const cleanEnv = getCleanEnv();
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, symbol, cutoffBeijingTime], {
+      encoding: 'utf-8', timeout: 30000, env: cleanEnv
+    });
+
+    if (proc.error) {
+      console.error(`❌ ${company} AKShare错误:`, proc.error.message);
+      return null;
+    }
+
+    if (proc.stderr?.trim()) {
+      const debugMatch = proc.stderr.match(/\[DEBUG\].*/);
+      if (debugMatch) console.log(`   ${debugMatch[0]}`);
+    }
+
+    const output = proc.stdout?.trim();
+    if (!output) {
+      console.log(`📭 ${company}: AKShare 无24小时内新闻`);
+      return null;
+    }
+
+    const newsItems = JSON.parse(output);
+    if (newsItems.length === 0) {
+      console.log(`📭 ${company}: AKShare 24小时内无有效新闻`);
+      return null;
+    }
+
+    console.log(`✅ ${company}: AKShare 找到 ${newsItems.length} 条24h内新闻`);
+    return newsItems;
+  } catch (error) {
+    console.error(`❌ ${company} AKShare 抓取失败:`, error.message);
+    return null;
+  }
+}
+
+// ============================================================
+// 新闻抓取: yfinance (港股/美股)
+// ============================================================
+
+/**
+ * 用 yfinance 抓取港股/美股新闻
+ */
+async function fetchNewsYfinance(company, ticker) {
+  try {
+    console.log(`🌐 ${company} [yfinance]: 抓取 ticker ${ticker}...`);
+
+    const pythonScript = `
+import sys
+import json
+import datetime
+import yfinance as yf
+
+ticker = sys.argv[1]
+t = yf.Ticker(ticker)
+news = t.news
+
+result = []
+if news:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(hours=24)
+
+    for item in news[:10]:
+        content = item.get('content', {})
+        pub_str = content.get('pubDate', '')
+        if not pub_str:
+            continue
+        try:
+            pub_dt = datetime.datetime.fromisoformat(pub_str.replace('Z', '+00:00'))
+            if pub_dt >= cutoff:
+                title = content.get('title', '').strip()
+                summary = content.get('summary', '').strip()
+                if title and len(title) > 5:
+                    result.append({
+                        'title': title,
+                        'content': summary if summary else title,
+                        'source': 'Yahoo Finance',
+                        'url': content.get('canonicalUrl', {}).get('url', ''),
+                        'publishTime': pub_str
+                    })
+        except:
+            continue
+
+result = result[:5]
+print(json.dumps(result, ensure_ascii=False))
+`;
+
+    const proc = spawnSync(PYTHON_PATH, ['-c', pythonScript, ticker], {
+      encoding: 'utf-8', timeout: 30000
+    });
+
+    if (proc.error) {
+      console.error(`❌ ${company} yfinance错误:`, proc.error.message);
+      return null;
+    }
+
+    const output = proc.stdout?.trim();
+    if (!output) {
+      console.log(`📭 ${company}: yfinance 无24小时内新闻`);
+      return null;
+    }
+
+    const newsItems = JSON.parse(output);
+    if (newsItems.length === 0) {
+      console.log(`📭 ${company}: yfinance 24小时内无有效新闻`);
+      return null;
+    }
+
+    console.log(`✅ ${company}: yfinance 找到 ${newsItems.length} 条24h内新闻`);
+    return newsItems;
+  } catch (error) {
+    console.error(`❌ ${company} yfinance 抓取失败:`, error.message);
+    return null;
+  }
+}
+
+// ============================================================
+// AI 摘要生成 (DeepSeek)
+// ============================================================
+
+/**
+ * 用 DeepSeek 生成标题和摘要
+ * 格式: JSON {"title": "...", "summary": "..."}
+ * 摘要: 300字内，按"事件-影响-后续"逻辑组织
+ */
+async function summarizeWithDeepSeek(company, newsItems) {
   if (!newsItems || newsItems.length === 0) return null;
-  
-  // 准备输入文本
-  const newsText = newsItems.map((item, idx) => {
-    const timeStr = item.publishTime 
-      ? item.publishTime.toLocaleString('zh-CN') 
-      : '未知时间';
-    return `[${idx + 1}] 标题: ${item.title}\n来源: ${item.source} (${timeStr})\n内容: ${item.content.substring(0, 200)}...\n`;
-  }).join('\n');
-
-  // 构建提示词
-  const prompt = isGlobal 
-    ? `请根据以下国际财经新闻整理一份时政大事·国际财经综合要闻，严格返回 JSON 格式：
-{
-  "title": "要闻标题（10-20字，概括最重要的1-2件事）",
-  "summary": "综合要闻（300字以内，包含政经要闻、股市行情、大宗商品、汇率等关键数据，纯文本无格式符号）",
-  "summary_short": "简要摘要（150字以内，只保留最关键的信息）"
-}
-
-新闻内容：
-${newsText}`
-    : `请分析以下关于${company}的新闻，严格返回 JSON 格式：
-{
-  "title": "事件标题（10-20字，必须包含具体事件和关键数据，禁止使用'重要动态''业务进展''公司公告''最新消息'等笼统词汇）",
-  "summary": "详细摘要（300字以内，纯文本无格式符号，客观中立的财经报道风格）",
-  "summary_short": "简短摘要（150字以内，提炼核心信息）"
-}
-
-新闻内容：
-${newsText}`;
-
-  // V3 禁词（按方案精确指定，不过度扩张）
-  const bannedWords = ['重要动态', '业务进展', '公司公告', '最新消息', '最新进展', '业务动态'];
 
   try {
-    console.log(`   🤖 调用DeepSeek总结...`);
-    
+    const allContent = newsItems.map(n => `[${n.source}] ${n.title}\n${n.content}`).join('\n\n');
+
+    const prompt = `你是一名财经新闻编辑。请根据以下关于${company}的新闻内容，汇总并总结后生成「标题」和「摘要」。
+
+要求:
+- title: 12~20字，体现新闻摘要核心内容。必须包含具体事件/数据/动作（如"净利润同比增长12%""签订50亿合作协议"），严禁使用"重要动态""业务动态""最新进展"等空泛表述。
+- summary: 300字以内的纯文本段落，按"事件-影响-后续"逻辑组织形成连贯段落。客观中立的财经报道风格，突出关键数据和事件。
+  - 事件: 客观描述发生了什么
+  - 影响: 分析对公司/行业/市场的影响
+  - 后续: 展望后续可能发展
+- 重点捕捉: 业务动态、战略合作、产品发布、人事变动、政策影响、行业地位变化等实质新闻
+- 如果新闻内容无明显实质内容（仅广告、营销软文等），返回 {"title": null, "summary": null}
+- 禁止使用任何列表符号(* - 数字等)，使用正常的中文标点符号
+- 严格只输出JSON，不要任何解释、不要markdown代码块
+
+输出格式:
+{"title": "...", "summary": "..."}
+
+新闻内容:
+${allContent}`;
+
     const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -292,412 +414,390 @@ ${newsText}`;
       },
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content: '你是一位专业的财经分析员。返回严格的 JSON 格式，不添加任何其他内容。'
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
         temperature: 0.3,
+        max_tokens: 700,
         response_format: { type: 'json_object' }
       })
     });
 
     if (!response.ok) {
-      if (response.status === 429) {
-        console.log(`   🔄 DeepSeek API速率限制，等待10秒后重试...`);
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        // 继续抛出错误，让上层处理
-      }
-      throw new Error(`DeepSeek API错误: ${response.status}`);
+      throw new Error(`API请求失败: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
-    const content = data.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error('DeepSeek返回空内容');
-    }
+    const raw = data.choices[0].message.content.trim();
 
-    // 解析JSON
-    let result;
+    let parsed;
     try {
-      result = JSON.parse(content);
-    } catch (parseError) {
-      // 尝试提取JSON
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        result = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('无法解析JSON响应');
-      }
+      parsed = JSON.parse(raw);
+    } catch {
+      console.warn(`⚠️  ${company}: JSON解析失败，跳过`);
+      return null;
     }
 
-    // 验证字段
-    if (!result.title || !result.summary) {
-      throw new Error('缺少必需字段');
+    const title = (parsed.title || '').trim();
+    const summary = (parsed.summary || '').trim();
+
+    // AI 判断无实质内容时返回 null
+    if (!title || !summary || title === 'null' || summary === 'null') {
+      console.log(`⏭️  ${company}: AI判断无明显实质内容，不入库`);
+      return null;
     }
 
-    // V3 标题质量控制
-    const title = (result.title || '').trim();
-    const hasBannedWord = bannedWords.some(word => title.includes(word));
-    const titleTooShort = title.length < 8;
-    const titleTooLong = title.length > 40;
-    const titleEmpty = title.length === 0;
-
-    if (titleEmpty || hasBannedWord || titleTooShort || titleTooLong) {
-      console.log(`   ⚠️ 标题质量检查失败: "${title}" (空=${titleEmpty} 含废词=${hasBannedWord} 过短=${titleTooShort} 过长=${titleTooLong})`);
-      return { ...result, qualityCheckFailed: true };
-    }
-
-    // V3 summary_short 严格校验：必须由 DeepSeek 返回，长度 30-200
-    const summaryShortRaw = (result.summary_short || '').trim();
-    if (summaryShortRaw.length < 30 || summaryShortRaw.length > 200) {
-      console.log(`   ⚠️ summary_short 长度不合格 (${summaryShortRaw.length})，视为生成失败`);
-      return { ...result, summary_short: summaryShortRaw, summaryShortFailed: true };
-    }
-    result.summary_short = summaryShortRaw;
-
-    // summary 长度兜底
-    if (result.summary && result.summary.length > 300) {
-      result.summary = result.summary.substring(0, 300);
-    }
-
-    console.log(`   ✅ 标题/摘要 质量通过: "${title}" (ss_len=${result.summary_short.length})`);
-
-    console.log(`   ✅ 总结完成: "${title}"`);
-    return result;
+    return { title, summary };
   } catch (error) {
-    console.error(`   ❌ DeepSeek总结失败: ${error.message}`);
+    console.error(`❌ ${company} AI摘要失败:`, error.message);
     return null;
   }
 }
 
+// ============================================================
+// 上市公司晨报生成
+// ============================================================
+
 /**
- * Step D: 写入数据库
+ * 用 DeepSeek 生成上市公司晨报
+ * 格式: 每个公司独立成段，段落之间空一行，纯文本简洁模式
  */
-async function writeToDatabase(record) {
+async function generateMorningBriefing(companySummaries) {
+  if (!companySummaries || companySummaries.length === 0) return null;
+
+  const summaryList = companySummaries.map(s => `${s.company}: ${s.summary}`).join('\n\n');
+
+  const prompt = `你是财经新闻编辑。请根据以下各公司新闻摘要，生成一篇简洁的"上市公司晨报"。
+
+要求：
+- 按公司独立成段，每个公司不超过100字
+- 每段开头用公司名称
+- 段落之间空一行
+- 使用正常的中文标点符号（逗号、句号、顿号、冒号等）
+- 不要使用markdown格式（不要星号、横杠、井号、方括号等）
+- 不要使用emoji或特殊符号
+- 客观中立的财经报道风格，突出关键数据和事件
+- 直接输出正文，不要加任何前言、标题或结尾总结
+- 只包含以下有新闻的公司，不要编造没有新闻的公司内容
+
+各公司新闻摘要：
+${summaryList}`;
+
   try {
-    const sql = neon(DATABASE_URL);
+    const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: 2000
+      })
+    });
+
+    if (!response.ok) throw new Error(`API请求失败: ${response.status}`);
+
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
+  } catch (error) {
+    console.error('❌ 晨报生成失败:', error.message);
+    return null;
+  }
+}
+
+// ============================================================
+// 数据库操作
+// ============================================================
+
+// ============================================================
+// 摘要质量二次过滤
+// ============================================================
+
+/**
+ * 检测摘要是否为低质量/无实质内容
+ * 返回 true 表示应该丢弃
+ */
+function isLowQualitySummary(company, summary) {
+  if (!summary || summary.length < 20) return true;
+
+  const noContentPatterns = [
+    '未能提取到具体',
+    '未包含与.*相关',
+    '未提及.*自身',
+    '未涉及.*自身',
+    '无法生成标题',
+    '暂无符合要求的新闻',
+    '暂无.*可供报道',
+    '新闻内容未涉及',
+    '未包含.*具体事件',
+    '新闻摘要中提及.*但未包含',
+  ];
+
+  for (const pattern of noContentPatterns) {
+    if (new RegExp(pattern).test(summary)) {
+      return true;
+    }
+  }
+
+  // 检测摘要主要讲的是其他公司而非目标公司
+  if (summary.includes('未提及') || summary.includes('未涉及')) {
+    if (summary.includes(`未提及${company}`) || summary.includes(`未涉及${company}`)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// ============================================================
+// 入库函数
+// ============================================================
+
+/**
+ * 在写入新记录前，删除某公司今日的旧 company_news 记录（避免重复入库）
+ * 只有当有新的新闻要入库时才调用此函数
+ */
+async function deleteDuplicateTodayRecordsIfAny(sql, company) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
     
-    // 删除今日同公司同类别旧记录
-    await withRetry(() => sql`
-      DELETE FROM news 
-      WHERE date = ${record.date} AND company = ${record.company} AND category = ${record.category}
-    `, `DELETE news ${record.company}/${record.category}`);
+    const result = await sql`
+      DELETE FROM news
+      WHERE company = ${company}
+        AND category = 'company_news'
+        AND date = ${today}
+    `;
     
-    // 插入新记录
-    const tsValue = record.timestamp || Date.now();
-    await withRetry(() => sql`
-      INSERT INTO news (
-        id, date, company, title, summary, summary_short, content, sources, category, keywords, timestamp, created_at
-      ) VALUES (
-        ${record.id},
-        ${record.date},
-        ${record.company},
-        ${record.title},
-        ${record.summary},
-        ${record.summary_short || record.summary.substring(0, 150)},
-        ${record.content},
-        ${JSON.stringify(record.sources)},
-        ${record.category},
-        ${JSON.stringify(record.keywords)},
-        ${tsValue},
-        NOW()
-      )
-    `, `INSERT news ${record.company}/${record.category}`);
-    
-    console.log(`   💾 写入成功: ${record.company}`);
+    if (result.rowCount > 0) {
+      console.log(`🗑️  ${company}: 已删除 ${result.rowCount} 条当日旧记录`);
+    }
+  } catch (error) {
+    console.error(`⚠️  ${company}: 删除当日重复记录失败 - ${error.message}`);
+  }
+}
+
+/**
+ * 写入公司新闻到数据库
+ */
+async function writeCompanyNews(sql, company, summaryObj, newsItems) {
+  if (!summaryObj || !summaryObj.summary) {
+    console.log(`⏭️ ${company}: 无总结内容，跳过入库`);
+    return false;
+  }
+
+  const { title: aiTitle, summary } = summaryObj;
+
+  try {
+    const today = new Date().toISOString().split('T')[0];
+
+    // 构建完整内容（含原始新闻链接）
+    const fullContent = summary + '\n\n---\n\n原始新闻:\n' +
+      newsItems.map((n, i) => `${i + 1}. ${n.title} - ${n.source} (${n.publishTime})`).join('\n');
+
+    // 删除今天该公司的旧记录（避免重复）
+    await sql`DELETE FROM news WHERE date = ${today} AND company = ${company} AND category = 'company_news'`;
+
+    // 生成标题
+    const cleanedTitle = (aiTitle || '').replace(/^【[^】]*】/, '').trim();
+    let unifiedTitle;
+    if (cleanedTitle && cleanedTitle.length >= 6 && !/重要动态|业务动态|最新进展/.test(cleanedTitle)) {
+      unifiedTitle = `【${today}】${company}·${cleanedTitle}`;
+    } else {
+      unifiedTitle = `【${today}】${company}重要动态`;
+    }
+
+    const timestamp = Date.now();
+    const companySlug = company.replace(/[\s\/]/g, '-');
+    const id = `company-news-${companySlug}-${today}-${timestamp}`;
+
+    // 收集原始新闻链接
+    const sources = newsItems
+      .map(n => n.url)
+      .filter(u => u && u.startsWith('http'));
+
+    await sql`
+      INSERT INTO news (id, date, company, title, summary, content, sources, category, timestamp, created_at)
+      VALUES (${id}, ${today}, ${company}, ${unifiedTitle}, ${summary}, ${fullContent}, ${JSON.stringify(sources)}, 'company_news', ${timestamp}, NOW())
+    `;
+
+    console.log(`💾 ${company}: 入库成功 → ${unifiedTitle}`);
     return true;
   } catch (error) {
-    console.error(`   ❌ 写入失败: ${error.message}`);
+    console.error(`❌ ${company} 入库失败:`, error.message);
     return false;
   }
 }
 
 /**
- * Step E: 处理时政国际财经
+ * 写入上市公司晨报
  */
-async function processGlobalFinance() {
-  console.log('\n🌍 开始处理时政大事·国际财经');
-  
-  // 1. 搜索新闻
-  const newsItems = await searchGlobalFinance();
-  if (newsItems.length === 0) {
-    console.log('⚠️ 无时政财经新闻，跳过');
+async function writeMorningBriefing(sql, briefing) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const timestamp = Date.now();
+    const briefingId = `morning-briefing-${today}-${timestamp}`;
+
+    // 删除今日旧的晨报
+    await sql`DELETE FROM news WHERE date = ${today} AND category = 'morning_briefing'`;
+
+    await sql`
+      INSERT INTO news (id, date, company, title, summary, content, category, timestamp, created_at)
+      VALUES (${briefingId}, ${today}, '上市公司晨报', ${`【${today}】上市公司晨报`}, ${briefing}, ${briefing}, 'morning_briefing', ${timestamp}, NOW())
+    `;
+
+    console.log('✅ 上市公司晨报已入库');
+    return true;
+  } catch (error) {
+    console.error('❌ 晨报入库失败:', error.message);
     return false;
   }
+}
 
-  // 2. DeepSeek总结
-  let summary = await summarizeWithDeepSeek('时政大事·国际财经', newsItems, true);
-  if (!summary) {
-    console.log('❌ 时政财经总结失败');
-    return false;
-  }
+// ============================================================
+// 工具函数
+// ============================================================
 
-  // 3. 标题/摘要 质量控制（重试一次，仍废 → 跳过不入库）
-  if (summary.qualityCheckFailed || summary.summaryShortFailed) {
-    console.log(`🔄 时政财经质量检查失败 (titleBad=${!!summary.qualityCheckFailed} ssBad=${!!summary.summaryShortFailed})，重试一次...`);
-    const retrySummary = await summarizeWithDeepSeek('时政大事·国际财经', newsItems, true);
-    if (!retrySummary || retrySummary.qualityCheckFailed || retrySummary.summaryShortFailed) {
-      console.log('❌ 重试后仍不合格，跳过时政财经');
-      return false;
-    }
-    summary = retrySummary;
-  }
-
-  // 4. 准备数据库记录
-  const timestamp = Date.now();
-  
-  // 构建信息来源文本
-  let sourceInfo = "\n\n---\n📎 信息来源\n";
-  newsItems.forEach((item, idx) => {
-    const timeStr = item.publishTime 
-      ? item.publishTime.toLocaleString('zh-CN', { 
-          year: 'numeric', month: '2-digit', day: '2-digit',
-          hour: '2-digit', minute: '2-digit'
-        }) 
-      : '未知时间';
-    sourceInfo += `${idx+1}. ${item.title} - ${item.source} (${timeStr}) ${item.url}\n`;
-  });
-  
-  const record = {
-    id: `daily-briefing-${today}-${timestamp}`,
-    timestamp: timestamp,
-    date: today,
-    company: '时政大事·国际财经',
-    title: `【${today}】时政大事·${summary.title}`,
-    summary: summary.summary,
-    summary_short: summary.summary_short || summary.summary.substring(0, 150),
-    content: summary.summary + sourceInfo,
-    sources: newsItems.map(item => ({
-      title: item.title,
-      url: item.url,
-      source: item.source,
-      publishTime: item.publishTime,
-      score: item.score || 0
-    })),
-    category: 'daily_briefing',
-    keywords: {
-      summary_short: summary.summary_short || summary.summary.substring(0, 150),
-      search_type: 'global_finance',
-      has_24h_news: newsItems.length > 0,
-      finance_domains: false
-    }
-  };
-
-  // 5. 写入数据库
-  const success = await writeToDatabase(record);
-  if (success) {
-    console.log(`✅ 时政财经记录已保存: ${record.title}`);
-  }
-  
-  return success;
+/**
+ * 获取清除代理的环境变量（AKShare 不能走代理）
+ */
+function getCleanEnv() {
+  const cleanEnv = { ...globalThis.process.env };
+  delete cleanEnv.HTTP_PROXY;
+  delete cleanEnv.HTTPS_PROXY;
+  delete cleanEnv.http_proxy;
+  delete cleanEnv.https_proxy;
+  delete cleanEnv.ALL_PROXY;
+  delete cleanEnv.all_proxy;
+  return cleanEnv;
 }
 
 /**
- * Step F: 处理单家公司
+ * 获取24小时前的北京时间字符串
  */
-async function processCompany(company) {
-  console.log(`\n🏢 处理公司: ${company}`);
-  
-  const symbol = COMPANY_STOCK_MAP[company];
-  
-  // 1. 收集新闻
-  let allNewsItems = [];
-  
-  // 如果有A股代码，先尝试AKShare
-  if (symbol) {
-    const akshareNews = await fetchNewsWithAKShare(company, symbol);
-    if (akshareNews && akshareNews.length > 0) {
-      allNewsItems.push(...akshareNews);
-    }
-  }
-  
-  // 跳过 Tavily for company news (AKShare 覆盖 86%，节省 ~26 credits/day)
-  // const tavilyNews = await searchNewsWithTavily(company);
-  // if (tavilyNews && tavilyNews.length > 0) {
-  //   allNewsItems.push(...tavilyNews);
-  // }
-  
-  if (allNewsItems.length === 0) {
-    console.log(`⚠️  ${company}无新闻，跳过`);
-    return false;
-  }
-  
-  // 2. 合并去重 + V3 严格 24h 二次过滤（铁律：< CUTOFF 一律丢弃）
-  const seenUrls = new Set();
-  const recentNews = [];
-  for (const item of allNewsItems) {
-    if (!item.publishTime) continue;
-    const dt = item.publishTime instanceof Date ? item.publishTime : new Date(item.publishTime);
-    if (isNaN(dt.getTime())) continue;
-    if (dt.getTime() < CUTOFF_MS) continue;
-    const key = (item.url || '').trim();
-    if (key && seenUrls.has(key)) continue;
-    if (key) seenUrls.add(key);
-    recentNews.push({ ...item, publishTime: dt });
-  }
-
-  if (recentNews.length === 0) {
-    console.log(`⚠️  ${company} 24h 内无相关新闻，跳过不入库（V3铁律）`);
-    return false;
-  }
-
-  console.log(`   合并去重 + 24h 过滤后剩 ${recentNews.length} 条新闻（cutoff=${cutoffISO}）`);
-  
-  // 3. DeepSeek总结
-  let summary = await summarizeWithDeepSeek(company, recentNews, false);
-  if (!summary) {
-    console.log(`❌ ${company}总结失败`);
-    return false;
-  }
-  
-  // 4. 标题/摘要 质量控制（重试一次，仍废 → 跳过不入库）
-  if (summary.qualityCheckFailed || summary.summaryShortFailed) {
-    console.log(`🔄 ${company} 质量检查失败 (titleBad=${!!summary.qualityCheckFailed} ssBad=${!!summary.summaryShortFailed})，重试一次...`);
-    const retrySummary = await summarizeWithDeepSeek(company, recentNews, false);
-    if (!retrySummary || retrySummary.qualityCheckFailed || retrySummary.summaryShortFailed) {
-      console.log(`❌ ${company} 重试后仍不合格，跳过`);
-      return false;
-    }
-    summary = retrySummary;
-  }
-  
-  // 5. 准备数据库记录
-  const timestamp = Date.now();
-  const companySlug = company.replace(/[\s\/]/g, '-');
-  
-  // 构建信息来源文本
-  let sourceInfo = "\n\n---\n📎 信息来源\n";
-  recentNews.forEach((item, idx) => {
-    const timeStr = item.publishTime 
-      ? item.publishTime.toLocaleString('zh-CN', { 
-          year: 'numeric', month: '2-digit', day: '2-digit',
-          hour: '2-digit', minute: '2-digit'
-        }) 
-      : '未知时间';
-    sourceInfo += `${idx+1}. ${item.title} - ${item.source} (${timeStr}) ${item.url}\n`;
-  });
-  
-  const record = {
-    id: `company-news-${companySlug}-${today}-${timestamp}`,
-    timestamp: timestamp,
-    date: today,
-    company: company,
-    title: `【${today}】${company}·${summary.title}`,
-    summary: summary.summary,
-    summary_short: summary.summary_short || summary.summary.substring(0, 150),
-    content: summary.summary + sourceInfo,
-    sources: recentNews.map(item => ({
-      title: item.title,
-      url: item.url,
-      source: item.source,
-      publishTime: item.publishTime,
-      fromAKShare: item.fromAKShare || false,
-      fromTavily: false, // 已停用 Tavily
-      score: item.score || 0
-    })),
-    category: 'company_news',
-    keywords: {
-      summary_short: summary.summary_short || summary.summary.substring(0, 150),
-      search_type: 'deep_search_v3',
-      has_24h_news: recentNews.length > 0,
-      finance_domains: true
-    }
-  };
-  
-  // 6. 写入数据库
-  const success = await writeToDatabase(record);
-  if (success) {
-    console.log(`✅ ${company}记录已保存`);
-  }
-  
-  // 7. 间隔2秒
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  
-  return success;
+function getCutoffBeijingTime() {
+  const now = new Date();
+  const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  return twentyFourHoursAgo.toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false, timeZone: 'Asia/Shanghai'
+  }).replace(/\//g, '-').replace(',', '');
 }
 
-/**
- * 主函数
- */
+// ============================================================
+// 主函数
+// ============================================================
+
 async function main() {
-  console.log('🚀 开始统一新闻抓取（V3方案 - 深度搜索严格24h筛选版）');
-  console.log('📋 版本: 2026-05-05 深度搜索v3');
-  console.log('='.repeat(50));
-  console.log(`📅 日期: ${today}`);
-  console.log(`⏰ 当前时间: ${now.toLocaleString('zh-CN')}`);
-  console.log('='.repeat(50));
-  
+  console.log('🚀 上市公司新闻抓取 (AKShare + yfinance 双数据源)');
+  console.log('========================================');
+
   // 检查环境变量
   if (!DEEPSEEK_API_KEY) {
-    console.error('❌ 缺少DEEPSEEK_API_KEY环境变量');
+    console.error('❌ 缺少 DEEPSEEK_API_KEY');
     process.exit(1);
   }
   if (!DATABASE_URL) {
-    console.error('❌ 缺少DATABASE_URL环境变量');
+    console.error('❌ 缺少 DATABASE_URL');
     process.exit(1);
   }
-  // if (!TAVILY_API_KEY) {
-  //   console.warn('⚠️ 缺少TAVILY_API_KEY环境变量，时政财经和部分公司新闻可能无法获取');
-  // }
-  
-  // 测试数据库
-  if (!await testDatabaseConnection()) {
-    process.exit(1);
-  }
-  
-  // 加载公司列表
-  const companies = loadCompanies();
-  if (companies.length === 0) {
-    console.error('❌ 未加载到公司列表');
-    process.exit(1);
-  }
-  
-  console.log(`📊 处理计划: 时政财经 + ${companies.length}家公司\n`);
-  
-  let globalSuccess = false;
-  let companySuccess = 0;
-  let companyFailed = 0;
-  
-  // Step A: 处理时政财经（已停用 Tavily）
-  console.log('⚠️ 时政财经模块已停用（全面停用 Tavily）');
-  
-  // Step B: 处理公司新闻
-  console.log(`\n🏢 开始处理${companies.length}家公司新闻`);
-  console.log('-'.repeat(40));
-  
+
+  const sql = neon(DATABASE_URL);
+
+  // 从数据库加载公司列表（与网页左边栏同步）
+  const companies = await loadCompaniesFromDB(sql);
+  console.log(`🔍 待处理: ${companies.length} 家公司\n`);
+
+  const cutoffBeijingTime = getCutoffBeijingTime();
+  console.log(`📅 24小时截止时间: ${cutoffBeijingTime}\n`);
+
+  let successCount = 0;
+  let skipCount = 0;
+  let failCount = 0;
+  const companySummaries = []; // 收集成功入库的摘要，用于生成晨报
+  const unmappedCompanies = []; // 无法匹配代码的公司
+
   for (const company of companies) {
-    try {
-      const success = await processCompany(company);
-      if (success) {
-        companySuccess++;
-      } else {
-        companyFailed++;
-      }
-    } catch (error) {
-      console.error(`❌ ${company}处理异常: ${error.message}`);
-      companyFailed++;
+    console.log(`\n━━━ 📰 ${company} ━━━`);
+
+    // === 第一步: 解析股票代码 ===
+    const resolved = await resolveCompanyCode(company);
+    if (!resolved) {
+      unmappedCompanies.push(company);
+      skipCount++;
+      continue;
     }
+
+    const { symbol, source } = resolved;
+    let newsItems = null;
+
+    // === 第二步: 按数据源抓取新闻 ===
+    if (source === 'akshare') {
+      // AKShare 抓取 A 股/港股
+      newsItems = await fetchNewsAKShare(company, symbol, cutoffBeijingTime);
+    } else if (source === 'yfinance') {
+      // yfinance 抓取港股/美股
+      newsItems = await fetchNewsYfinance(company, symbol);
+    }
+
+    if (!newsItems || newsItems.length === 0) {
+      console.log(`⏭️  ${company}: 24小时内无新闻`);
+      skipCount++;
+      continue;
+    }
+
+    // === 第三步: AI 摘要生成 ===
+    const summaryObj = await summarizeWithDeepSeek(company, newsItems);
+    if (!summaryObj) {
+      skipCount++;
+      continue;
+    }
+
+    // === 第四步: 二次过滤 — 排除无实质内容的摘要 ===
+    if (isLowQualitySummary(company, summaryObj.summary)) {
+      console.log(`⏭️  ${company}: 摘要无实质内容，跳过入库和晨报`);
+      skipCount++;
+      continue;
+    }
+
+    // === 第五步: 入库 ===
+    const dbSuccess = await writeCompanyNews(sql, company, summaryObj, newsItems);
+    if (dbSuccess) {
+      successCount++;
+      companySummaries.push({ company, summary: summaryObj.summary });
+    } else {
+      failCount++;
+    }
+
+    // 间隔1秒，避免 API 限速
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
-  
-  // 总结报告
-  console.log('\n' + '='.repeat(50));
-  console.log('✅ 任务完成！');
-  console.log('='.repeat(50));
-  console.log(`📊 时政财经: ${globalSuccess ? '成功 ✓' : '失败 ✗'}`);
-  console.log(`📊 公司新闻: 成功 ${companySuccess}, 失败 ${companyFailed}, 总计 ${companies.length}`);
-  console.log(`⏰ 完成时间: ${new Date().toLocaleString('zh-CN')}`);
-  console.log('='.repeat(50));
-  
-  if (!globalSuccess && companySuccess === 0) {
-    console.error('⚠️ 警告: 未成功写入任何记录');
-    process.exit(1);
+
+  // === 生成上市公司晨报（仅包含有新闻的公司） ===
+  if (companySummaries.length > 0) {
+    console.log('\n📝 生成上市公司晨报...');
+    const briefing = await generateMorningBriefing(companySummaries);
+    if (briefing) {
+      await writeMorningBriefing(sql, briefing);
+    }
+  } else {
+    console.log('\n⚠️ 今日无公司新闻，跳过晨报生成');
+  }
+
+  // === 总结 ===
+  console.log('\n========================================');
+  console.log('✅ 任务完成!');
+  console.log(`📊 统计: 成功 ${successCount}, 跳过 ${skipCount}, 失败 ${failCount}, 总计 ${companies.length}`);
+  console.log(`⏰ 完成时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
+
+  if (unmappedCompanies.length > 0) {
+    console.log(`\n⚠️  以下 ${unmappedCompanies.length} 家公司无法匹配代码:`);
+    unmappedCompanies.forEach(c => console.log(`   - ${c}`));
+  }
+
+  if (successCount === 0 && companies.length > 0) {
+    console.log('📝 注: 今日所有公司24小时内均无新闻');
   }
 }
 
@@ -707,7 +807,7 @@ process.on('unhandledRejection', (error) => {
   process.exit(1);
 });
 
-// 运行主函数
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
-}
+main().catch(error => {
+  console.error('❌ 程序错误:', error);
+  process.exit(1);
+});

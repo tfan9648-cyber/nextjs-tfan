@@ -53,7 +53,7 @@ const DEFAULT_COMPANIES = [
 ];
 
 const DEFAULT_KEYWORDS = ["", "", "", "", ""];
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 30;
 
 export default function Home() {
   // === Left column state ===
@@ -120,18 +120,34 @@ export default function Home() {
     setShowKeyDialog(false);
   }, []);
 
-  // === Init companies ===
+  // === Init companies (from DB, fallback to localStorage, then default) ===
   useEffect(() => {
-    const stored = localStorage.getItem("companies");
-    if (stored) {
+    (async () => {
       try {
-        setCompanies(JSON.parse(stored));
+        const res = await fetch('/api/update-companies');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.companies && Array.isArray(data.companies) && data.companies.length > 0) {
+            setCompanies(data.companies);
+            localStorage.setItem('companies', JSON.stringify(data.companies));
+            return;
+          }
+        }
       } catch {
+        // DB不可用时回退到本地缓存
+      }
+      // 回退: localStorage -> 默认列表
+      const stored = localStorage.getItem('companies');
+      if (stored) {
+        try {
+          setCompanies(JSON.parse(stored));
+        } catch {
+          setCompanies(DEFAULT_COMPANIES);
+        }
+      } else {
         setCompanies(DEFAULT_COMPANIES);
       }
-    } else {
-      setCompanies(DEFAULT_COMPANIES);
-    }
+    })();
   }, []);
 
   // === Load API Key from sessionStorage ===
@@ -174,18 +190,37 @@ export default function Home() {
     fetchNews();
   }, [fetchNews]);
 
-  // === Delete a news item (with double-confirm) ===
+  // === Delete a news item (with double-confirm + key check) ===
   const deleteNewsItem = async (id: string, title: string) => {
     if (!confirm(`确定要删除这条要闻吗？\n\n${title}`)) return;
     if (!confirm('再次确认：删除后无法恢复，确定继续？')) return;
-    try {
-      const res = await fetch(`/api/news?id=${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('删除失败');
-      if (selectedNews?.id === id) setSelectedNews(null);
-      await fetchNews();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '删除失败');
+
+    const doDelete = async (key: string) => {
+      try {
+        const res = await fetch(`/api/news?id=${id}`, {
+          method: 'DELETE',
+          headers: { 'x-api-key': key },
+        });
+        if (res.status === 401) {
+          setError('访问密钥无效');
+          sessionStorage.removeItem('api_key');
+          setApiKey(''); apiKeyRef.current = '';
+          return;
+        }
+        if (!res.ok) throw new Error('删除失败');
+        if (selectedNews?.id === id) setSelectedNews(null);
+        await fetchNews();
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : '删除失败');
+      }
+    };
+
+    const currentKey = apiKeyRef.current;
+    if (!currentKey) {
+      openKeyDialog((key) => { doDelete(key); });
+      return;
     }
+    await doDelete(currentKey);
   };
 
   // === Company helpers ===
@@ -392,6 +427,20 @@ export default function Home() {
     } finally {
       setReportLoading(false);
     }
+  };
+
+  // === render content with clickable links ===
+  const renderContentWithLinks = (text: string) => {
+    const urlPattern = /(https?:\/\/[^\s)]+)/g;
+    const parts = text.split(urlPattern);
+    return parts.map((part, i) => {
+      if (/^https?:\/\//.test(part)) {
+        return (
+          <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline break-all">{part}</a>
+        );
+      }
+      return <React.Fragment key={i}>{part}</React.Fragment>;
+    });
   };
 
   // === Pagination ===
@@ -709,7 +758,7 @@ export default function Home() {
             {/* Modal body */}
             <div className="flex-1 overflow-y-auto px-6 py-4">
               <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
-                {selectedNews.content}
+                {renderContentWithLinks(selectedNews.content)}
               </div>
               {selectedNews.sources && selectedNews.sources.length > 0 && (
                 <div className="mt-6 pt-4 border-t">
@@ -742,18 +791,7 @@ export default function Home() {
             {/* Modal footer */}
             <div className="flex items-center justify-between px-6 py-3 border-t">
               <button
-                onClick={async () => {
-                  if (!confirm('确定要删除这篇文章吗？')) return;
-                  try {
-                    const res = await fetch(`/api/news?id=${selectedNews.id}`, { method: 'DELETE' });
-                    if (res.ok) {
-                      setSelectedNews(null);
-                      fetchNews();
-                    }
-                  } catch (e) {
-                    console.error('Delete failed:', e);
-                  }
-                }}
+                onClick={() => deleteNewsItem(selectedNews.id, selectedNews.title)}
                 className="flex items-center gap-1.5 px-4 py-2 bg-red-500 hover:bg-red-600 text-white text-sm rounded-lg transition-colors"
               >
                 <Trash2 className="w-4 h-4" />
