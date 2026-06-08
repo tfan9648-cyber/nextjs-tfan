@@ -52,7 +52,7 @@ const DEFAULT_COMPANIES = [
   "长江电力",
 ];
 
-const DEFAULT_KEYWORDS = ["", "", "", "", ""];
+const DEFAULT_KEYWORDS = ["", "", "", "", "", "", "", "", "", ""];
 const PAGE_SIZE = 30;
 
 export default function Home() {

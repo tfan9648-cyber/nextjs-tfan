@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'keywords required' }, { status: 400 });
     }
 
-    const validKeywords = keywords.filter((k: string) => k.trim()).slice(0, 5);
+    const validKeywords = keywords.filter((k: string) => k.trim()).slice(0, 10);
     const today = new Date().toISOString().split('T')[0];
     const timestamp = Date.now();
 
