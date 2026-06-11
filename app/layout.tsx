@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "上市公司要闻汇总",
+  title: "蓝天金融资讯平台",
   description: "AI 自动汇总上市公司最新动态",
 };
 

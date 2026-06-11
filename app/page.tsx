@@ -452,7 +452,7 @@ export default function Home() {
       {/* Header */}
       <header className="bg-gradient-to-r from-blue-700 to-indigo-700 text-white px-6 py-4 shadow-lg">
         <h1 className="text-xl font-bold flex items-center gap-2">
-          <Newspaper className="w-6 h-6" /> 金融资讯平台
+          <Newspaper className="w-6 h-6" /> 蓝天金融资讯平台
         </h1>
       </header>
 
